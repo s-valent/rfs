@@ -389,7 +389,7 @@ type fileStat struct {
 	GID uint32
 }
 
-func (f *fileInfoWrapper) Sys() interface{} {
+func (f *fileInfoWrapper) Sys() any {
 	return &fileStat{UID: currentUID, GID: currentGID}
 }
 

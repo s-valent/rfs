@@ -18,6 +18,7 @@ import (
 	"github.com/smallfz/libnfs-go/auth"
 	"github.com/smallfz/libnfs-go/backend"
 	nfsFs "github.com/smallfz/libnfs-go/fs"
+	nfslog "github.com/smallfz/libnfs-go/log"
 	"github.com/smallfz/libnfs-go/server"
 )
 
@@ -33,6 +34,8 @@ func findFreePort() (string, error) {
 }
 
 func main() {
+	nfslog.SetLevelName("info")
+
 	flag.Parse()
 
 	args := flag.Args()

@@ -11,6 +11,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
+	"golang.org/x/crypto/ssh/knownhosts"
 )
 
 type sshConfig struct {
@@ -114,12 +115,19 @@ func getConn(alias string) (*ssh.Client, error) {
 	}
 
 	signers := append(aliasConfig.signers, agentSigners...)
+
+	knownHostsPath := os.ExpandEnv("$HOME/.ssh/known_hosts")
+	hostKeyCallback, err := knownhosts.New(knownHostsPath)
+	if err != nil {
+		log.Fatalf("Warning: failed to load known_hosts %v: %v", knownHostsPath, err)
+	}
+
 	config := &ssh.ClientConfig{
 		User: aliasConfig.user,
 		Auth: []ssh.AuthMethod{
 			ssh.PublicKeys(signers...),
 		},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // TODO: make secure
+		HostKeyCallback: hostKeyCallback,
 	}
 
 	addr := net.JoinHostPort(aliasConfig.hostname, aliasConfig.port)

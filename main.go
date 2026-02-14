@@ -1,14 +1,14 @@
-// mount -o nfsvers=4,soft,noacl,tcp -t nfs localhost:/ /path/to/dir
-
 package main
 
 import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -21,16 +21,63 @@ import (
 	"github.com/smallfz/libnfs-go/server"
 )
 
+func findFreePort() (string, error) {
+	l, err := net.Listen("tcp", ":0")
+	if err != nil {
+		return "", err
+	}
+	defer l.Close()
+
+	addr := l.Addr().(*net.TCPAddr)
+	return fmt.Sprintf(":%d", addr.Port), nil
+}
+
 func main() {
-	var hostAlias string
-	var rootDir string
-	var mountDir string
-	listen := ":2049"
-	flag.StringVar(&listen, "l", listen, "Server listen address")
-	flag.StringVar(&hostAlias, "h", hostAlias, "SSH host alias")
-	flag.StringVar(&rootDir, "r", "/", "SFTP root directory")
-	flag.StringVar(&mountDir, "m", "/tmp/remote-fs-mount", "Mount directory")
 	flag.Parse()
+
+	args := flag.Args()
+	if len(args) < 1 {
+		fmt.Printf("Usage: %s <ssh alias>:<remote path> [mount path]\n", os.Args[0])
+		fmt.Printf("  <ssh alias>    SSH alias from ~/.ssh/config\n")
+		fmt.Printf("  <remote path> Remote directory to mount (supports ~/ prefix)\n")
+		fmt.Printf("  [mount path]  Local mount point (optional, default: /tmp/remote-fs-<random>)\n")
+		os.Exit(1)
+	}
+
+	target := args[0]
+
+	var sshAlias, remotePath string
+	if strings.Contains(target, ":") {
+		parts := strings.SplitN(target, ":", 2)
+		sshAlias = parts[0]
+		remotePath = parts[1]
+	} else {
+		sshAlias = target
+		remotePath = "/"
+	}
+
+	var mountDir string
+	if len(args) >= 2 {
+		mountDir = args[1]
+	} else {
+		safePath := strings.ReplaceAll(remotePath, "/", ":")
+		tmpDir := filepath.Join(os.TempDir(), fmt.Sprintf("%s %s", sshAlias, safePath))
+		if err := os.MkdirAll(tmpDir, 0755); err != nil {
+			log.Fatalf("Failed to create temp mount directory: %v", err)
+		}
+		mountDir = tmpDir
+	}
+
+	listen, err := findFreePort()
+	if err != nil {
+		log.Fatalf("Failed to find free port: %v", err)
+	}
+
+	log.Printf("Starting remote-fs:\n")
+	log.Printf("  SSH alias:     %s\n", sshAlias)
+	log.Printf("  Remote path:  %s\n", remotePath)
+	log.Printf("  Mount point:  %s\n", mountDir)
+	log.Printf("  Listen:       %s\n", listen)
 
 	mounted := false
 	cleanup := func() {
@@ -65,14 +112,14 @@ func main() {
 	}
 	log.Printf("Created mount directory: %s\n", mountDir)
 
-	client, err := ssh.Connect(hostAlias)
+	client, err := ssh.Connect(sshAlias)
 	if err != nil {
 		cleanup()
 		log.Fatalf("Failed to dial: %v", err)
 	}
 	defer client.Close()
 
-	log.Printf("Successfully connected to %v\n", hostAlias)
+	log.Printf("Successfully connected to %s\n", sshAlias)
 
 	session, err := client.NewSession()
 	if err != nil {
@@ -88,7 +135,7 @@ func main() {
 		log.Fatal("Failed to run command: ", err)
 	}
 
-	fs, err := client.NewFS(rootDir)
+	fs, err := client.NewFS(remotePath)
 	if err != nil {
 		cleanup()
 		log.Fatalf("Failed to create SFTP client: %v", err)
@@ -116,8 +163,8 @@ func main() {
 	exec.Command("umount", "-f", mountDir).Run()
 
 	log.Printf("Mounting NFS...\n")
-	mountSrc := "localhost:/"
-	mountCmd := exec.Command("mount", "-o", fmt.Sprintf("nfsvers=4,soft,noacl,tcp,port=%s", strings.TrimPrefix(listen, ":")), "-t", "nfs", mountSrc, mountDir)
+	port := strings.TrimPrefix(listen, ":")
+	mountCmd := exec.Command("mount", "-o", fmt.Sprintf("nfsvers=4,soft,noacl,tcp,port=%s", port), "-t", "nfs", "localhost:/", mountDir)
 	mountCmd.Stdout = os.Stdout
 	mountCmd.Stderr = os.Stderr
 	if err := mountCmd.Run(); err != nil {
@@ -132,8 +179,9 @@ func main() {
 	mounted = true
 	log.Printf("Mounted at %s\n", mountDir)
 
-	log.Printf("Server running. Mount point: %s\n", mountDir)
-	fmt.Printf("Mount point: %s\n", mountDir)
+	log.Printf("Server running.\n")
+	fmt.Printf("\nMount point: %s\n", mountDir)
+	fmt.Printf("NFS:         localhost%s\n", listen)
 
 	select {}
 }

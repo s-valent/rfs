@@ -3,6 +3,7 @@ package ssh
 import (
 	"encoding/binary"
 	"fmt"
+	"log"
 	"os"
 	"os/user"
 	"path"
@@ -38,19 +39,65 @@ type sshFS struct {
 	rootDir string
 }
 
+func (fs *sshFS) reconnect() error {
+	log.Printf("SFTP connection lost, reconnecting...")
+
+	newConn, err := sftp.NewClient(fs.client.GetConn())
+	if err != nil {
+		return err
+	}
+
+	fs.conn = newConn
+	log.Printf("SFTP reconnected")
+	return nil
+}
+
+func (fs *sshFS) ensureConnected() error {
+	if fs.conn != nil {
+		return nil
+	}
+	return fs.reconnect()
+}
+
+func (fs *sshFS) doWithReconnect(fn func(*sftp.Client) error) error {
+	err := fn(fs.conn)
+	if err != nil {
+		log.Printf("SFTP operation failed: %v, reconnecting...", err)
+		if reerr := fs.reconnect(); reerr != nil {
+			return fmt.Errorf("operation failed: %v, reconnection failed: %w", err, reerr)
+		}
+		return fn(fs.conn)
+	}
+	return nil
+}
+
 func (c *sshClient) NewFS(rootDir string) (*sshFS, error) {
 	conn, err := sftp.NewClient(c.conn)
 	if err != nil {
 		return nil, err
 	}
-	if rootDir == "" {
-		rootDir = "/"
+
+	if strings.HasPrefix(rootDir, "~/") {
+		home, err := conn.Getwd()
+		if err != nil {
+			home = "/"
+		}
+		rootDir = path.Join(home, rootDir[2:])
+	} else if rootDir == "" || rootDir == "~" {
+		root, err := conn.Getwd()
+		if err != nil {
+			root = "/"
+		}
+		rootDir = root
 	}
 	return &sshFS{conn, c, nil, rootDir}, nil
 }
 
 func (fs *sshFS) Close() error {
-	return fs.conn.Close()
+	if fs.conn != nil {
+		return fs.conn.Close()
+	}
+	return nil
 }
 
 func (fs *sshFS) SetCreds(creds nfsFs.Creds) {
@@ -58,6 +105,9 @@ func (fs *sshFS) SetCreds(creds nfsFs.Creds) {
 }
 
 func (fs *sshFS) Create(path string) (nfsFs.File, error) {
+	if err := fs.ensureConnected(); err != nil {
+		return nil, err
+	}
 	fullPath := fs.resolvePath(path)
 	handle, err := fs.conn.Create(fullPath)
 	if err != nil {
@@ -67,6 +117,9 @@ func (fs *sshFS) Create(path string) (nfsFs.File, error) {
 }
 
 func (fs *sshFS) MkdirAll(dirPath string, mode os.FileMode) error {
+	if err := fs.ensureConnected(); err != nil {
+		return err
+	}
 	fullPath := fs.resolvePath(dirPath)
 	if err := fs.conn.MkdirAll(fullPath); err != nil {
 		return err
@@ -75,6 +128,9 @@ func (fs *sshFS) MkdirAll(dirPath string, mode os.FileMode) error {
 }
 
 func (fs *sshFS) Open(filePath string) (nfsFs.File, error) {
+	if err := fs.ensureConnected(); err != nil {
+		return nil, err
+	}
 	fullPath := fs.resolvePath(filePath)
 	handle, err := fs.conn.Open(fullPath)
 	if err != nil {
@@ -89,6 +145,9 @@ func (fs *sshFS) Open(filePath string) (nfsFs.File, error) {
 }
 
 func (fs *sshFS) OpenFile(filePath string, flag int, mode os.FileMode) (nfsFs.File, error) {
+	if err := fs.ensureConnected(); err != nil {
+		return nil, err
+	}
 	fullPath := fs.resolvePath(filePath)
 
 	if flag&os.O_CREATE != 0 {
@@ -118,6 +177,9 @@ func (fs *sshFS) OpenFile(filePath string, flag int, mode os.FileMode) (nfsFs.Fi
 }
 
 func (fs *sshFS) Stat(filePath string) (nfsFs.FileInfo, error) {
+	if err := fs.ensureConnected(); err != nil {
+		return nil, err
+	}
 	fullPath := fs.resolvePath(filePath)
 	info, err := fs.conn.Stat(fullPath)
 	if err != nil {
@@ -127,6 +189,9 @@ func (fs *sshFS) Stat(filePath string) (nfsFs.FileInfo, error) {
 }
 
 func (fs *sshFS) Lstat(filePath string) (nfsFs.FileInfo, error) {
+	if err := fs.ensureConnected(); err != nil {
+		return nil, err
+	}
 	fullPath := fs.resolvePath(filePath)
 	info, err := fs.conn.Lstat(fullPath)
 	if err != nil {
@@ -136,38 +201,59 @@ func (fs *sshFS) Lstat(filePath string) (nfsFs.FileInfo, error) {
 }
 
 func (fs *sshFS) Chmod(filePath string, mode os.FileMode) error {
+	if err := fs.ensureConnected(); err != nil {
+		return err
+	}
 	fullPath := fs.resolvePath(filePath)
 	return fs.conn.Chmod(fullPath, mode)
 }
 
 func (fs *sshFS) Chown(filePath string, uid, gid int) error {
+	if err := fs.ensureConnected(); err != nil {
+		return err
+	}
 	fullPath := fs.resolvePath(filePath)
 	return fs.conn.Chown(fullPath, uid, gid)
 }
 
 func (fs *sshFS) Symlink(oldname, newname string) error {
+	if err := fs.ensureConnected(); err != nil {
+		return err
+	}
 	fullNew := fs.resolvePath(newname)
 	return fs.conn.Symlink(oldname, fullNew)
 }
 
 func (fs *sshFS) Readlink(filePath string) (string, error) {
+	if err := fs.ensureConnected(); err != nil {
+		return "", err
+	}
 	fullPath := fs.resolvePath(filePath)
 	return fs.conn.ReadLink(fullPath)
 }
 
 func (fs *sshFS) Link(oldname, newname string) error {
+	if err := fs.ensureConnected(); err != nil {
+		return err
+	}
 	oldPath := fs.resolvePath(oldname)
 	newPath := fs.resolvePath(newname)
 	return fs.conn.Link(oldPath, newPath)
 }
 
 func (fs *sshFS) Rename(oldname, newname string) error {
+	if err := fs.ensureConnected(); err != nil {
+		return err
+	}
 	oldPath := fs.resolvePath(oldname)
 	newPath := fs.resolvePath(newname)
 	return fs.conn.Rename(oldPath, newPath)
 }
 
 func (fs *sshFS) Remove(filePath string) error {
+	if err := fs.ensureConnected(); err != nil {
+		return err
+	}
 	fullPath := fs.resolvePath(filePath)
 	return fs.conn.Remove(fullPath)
 }
@@ -199,7 +285,7 @@ func (fs *sshFS) GetFileId(info nfsFs.FileInfo) uint64 {
 }
 
 func (fs *sshFS) GetRootHandle() []byte {
-	return []byte("/")
+	return []byte(fs.rootDir)
 }
 
 func (fs *sshFS) GetHandle(info nfsFs.FileInfo) ([]byte, error) {
@@ -212,33 +298,48 @@ func (fs *sshFS) GetHandle(info nfsFs.FileInfo) ([]byte, error) {
 
 func (fs *sshFS) ResolveHandle(handle []byte) (string, error) {
 	p := decodePath(handle)
-	if p == "" {
-		return string(handle), nil
+	if p == "" || string(handle) == "/" {
+		return fs.rootDir, nil
 	}
 	return p, nil
 }
 
 func (fs *sshFS) resolvePath(p string) string {
-	if p == "" || p == "." {
-		return fs.rootDir
+
+	if p == "" || p == "." || p == "/" {
+		result := fs.rootDir
+		return result
+	}
+
+	if p == "~" {
+		result := fs.rootDir
+		return result
+	}
+	if strings.HasPrefix(p, "~/") {
+		result := path.Join(fs.rootDir, p[2:])
+		return result
 	}
 
 	cleanRoot := path.Clean(fs.rootDir)
 
 	if path.IsAbs(p) {
 		if cleanRoot == "/" {
-			return path.Clean(p)
+			result := path.Clean(p)
+			return result
 		}
 
 		if strings.HasPrefix(p, cleanRoot) {
-			return path.Clean(p)
+			result := path.Clean(p)
+			return result
 		}
 
 		rel := p[1:]
-		return path.Join(cleanRoot, rel)
+		result := path.Join(cleanRoot, rel)
+		return result
 	}
 
-	return path.Join(cleanRoot, p)
+	result := path.Join(cleanRoot, p)
+	return result
 }
 
 func newFileInfo(info os.FileInfo) nfsFs.FileInfo {

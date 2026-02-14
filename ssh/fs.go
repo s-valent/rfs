@@ -136,12 +136,13 @@ func (fs *sshFS) Open(filePath string) (nfsFs.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	info, err := handle.Stat()
+	info, err := fs.conn.Lstat(fullPath)
 	if err != nil {
 		handle.Close()
-		return &file{handle, fs.conn, true, fullPath}, nil
+		return nil, err
 	}
-	return &file{handle, fs.conn, info.IsDir(), fullPath}, nil
+	isSymlink := info.Mode()&os.ModeSymlink != 0
+	return &file{handle, fs.conn, info.IsDir() && !isSymlink, fullPath}, nil
 }
 
 func (fs *sshFS) OpenFile(filePath string, flag int, mode os.FileMode) (nfsFs.File, error) {
@@ -156,24 +157,26 @@ func (fs *sshFS) OpenFile(filePath string, flag int, mode os.FileMode) (nfsFs.Fi
 			return nil, err
 		}
 		fs.conn.Chmod(fullPath, mode)
-		info, err := handle.Stat()
+		info, err := fs.conn.Lstat(fullPath)
 		if err != nil {
 			handle.Close()
-			return &file{handle, fs.conn, true, fullPath}, nil
+			return nil, err
 		}
-		return &file{handle, fs.conn, info.IsDir(), fullPath}, nil
+		isSymlink := info.Mode()&os.ModeSymlink != 0
+		return &file{handle, fs.conn, info.IsDir() && !isSymlink, fullPath}, nil
 	}
 
 	handle, err := fs.conn.OpenFile(fullPath, flag)
 	if err != nil {
 		return nil, err
 	}
-	info, err := handle.Stat()
+	info, err := fs.conn.Lstat(fullPath)
 	if err != nil {
 		handle.Close()
-		return &file{handle, fs.conn, true, fullPath}, nil
+		return nil, err
 	}
-	return &file{handle, fs.conn, info.IsDir(), fullPath}, nil
+	isSymlink := info.Mode()&os.ModeSymlink != 0
+	return &file{handle, fs.conn, info.IsDir() && !isSymlink, fullPath}, nil
 }
 
 func (fs *sshFS) Stat(filePath string) (nfsFs.FileInfo, error) {
@@ -181,7 +184,7 @@ func (fs *sshFS) Stat(filePath string) (nfsFs.FileInfo, error) {
 		return nil, err
 	}
 	fullPath := fs.resolvePath(filePath)
-	info, err := fs.conn.Stat(fullPath)
+	info, err := fs.conn.Lstat(fullPath)
 	if err != nil {
 		return nil, err
 	}
@@ -366,11 +369,14 @@ func (f *fileInfoWrapper) Size() int64 {
 func (f *fileInfoWrapper) Mode() os.FileMode {
 	mode := f.info.Mode()
 
+	if mode&os.ModeSymlink != 0 {
+		return mode
+	}
+
 	if f.info.IsDir() {
 		if mode&os.ModeDir == 0 {
 			mode = mode | os.ModeDir
 		}
-		return mode
 	}
 
 	return mode
@@ -381,6 +387,9 @@ func (f *fileInfoWrapper) ModTime() time.Time {
 }
 
 func (f *fileInfoWrapper) IsDir() bool {
+	if f.info.Mode()&os.ModeSymlink != 0 {
+		return false
+	}
 	return f.info.IsDir()
 }
 

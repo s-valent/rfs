@@ -1,0 +1,58 @@
+name: RemoteFSMenu
+options:
+  bundleIdPrefix: com.remotefs
+  deploymentTarget:
+    macOS: "13.0"
+  xcodeVersion: "15.0"
+  buildDir: .build
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    MACOSX_DEPLOYMENT_TARGET: "13.0"
+
+targets:
+  RemoteFSMenu:
+    type: application
+    platform: macOS
+    sources:
+      - path: RemoteFSMenu
+        excludes:
+          - "**/.DS_Store"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.remotefs.menu
+        INFOPLIST_FILE: RemoteFSMenu/Info.plist
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGNING_ALLOWED: NO
+        ENABLE_HARDENED_RUNTIME: NO
+    preBuildScripts:
+      - name: Build Go Binary
+        script: |
+          cd "$SRCROOT/RemoteFSServer"
+          go build -o "$BUILT_PRODUCTS_DIR/remote-fs" .
+    info:
+      path: RemoteFSMenu/Info.plist
+      properties:
+        CFBundleName: RemoteFSMenu
+        CFBundleDisplayName: Remote FS
+        CFBundleIdentifier: com.remotefs.menu
+        CFBundleVersion: "1"
+        CFBundleShortVersionString: "1.0"
+        CFBundlePackageType: APPL
+        CFBundleExecutable: RemoteFSMenu
+        LSMinimumSystemVersion: "13.0"
+        LSUIElement: true
+        NSHighResolutionCapable: true
+        NSPrincipalClass: NSApplication
+
+schemes:
+  RemoteFSMenu:
+    build:
+      targets:
+        RemoteFSMenu: all
+    run:
+      config: Debug
+    archive:
+      config: Release

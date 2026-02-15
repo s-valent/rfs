@@ -11,7 +11,7 @@ import (
 type file struct {
 	handle   *sftp.File
 	client   *sftp.Client
-	fs       *sshFS
+	fs       *SSHFS
 	isDir    bool
 	fullPath string
 	rootDir  string

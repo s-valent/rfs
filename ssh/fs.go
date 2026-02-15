@@ -38,9 +38,7 @@ type dirCacheEntry struct {
 	expiry  time.Time
 }
 
-type SSHFS = sshFS
-
-type sshFS struct {
+type SSHFS struct {
 	conn       *sftp.Client
 	client     *SSHClient
 	creds      nfsFs.Creds
@@ -49,7 +47,7 @@ type sshFS struct {
 	dirCacheMu sync.Mutex
 }
 
-func (fs *sshFS) reconnect() error {
+func (fs *SSHFS) reconnect() error {
 	log.Printf("SFTP connection lost, reconnecting...")
 
 	newConn, err := sftp.NewClient(fs.client.GetConn())
@@ -63,14 +61,14 @@ func (fs *sshFS) reconnect() error {
 	return nil
 }
 
-func (fs *sshFS) ensureConnected() error {
+func (fs *SSHFS) ensureConnected() error {
 	if fs.conn != nil {
 		return nil
 	}
 	return fs.reconnect()
 }
 
-func (fs *sshFS) doWithReconnect(fn func(*sftp.Client) error) error {
+func (fs *SSHFS) doWithReconnect(fn func(*sftp.Client) error) error {
 	err := fn(fs.conn)
 	if err != nil {
 		log.Printf("SFTP operation failed: %v, reconnecting...", err)
@@ -82,7 +80,7 @@ func (fs *sshFS) doWithReconnect(fn func(*sftp.Client) error) error {
 	return nil
 }
 
-func (c *SSHClient) NewFS(rootDir string) (*sshFS, error) {
+func (c *SSHClient) NewFS(rootDir string) (*SSHFS, error) {
 	conn, err := sftp.NewClient(c.conn)
 	if err != nil {
 		return nil, err
@@ -101,17 +99,17 @@ func (c *SSHClient) NewFS(rootDir string) (*sshFS, error) {
 		}
 		rootDir = root
 	}
-	return &sshFS{conn, c, nil, rootDir, make(map[string]dirCacheEntry), sync.Mutex{}}, nil
+	return &SSHFS{conn, c, nil, rootDir, make(map[string]dirCacheEntry), sync.Mutex{}}, nil
 }
 
-func (fs *sshFS) Close() error {
+func (fs *SSHFS) Close() error {
 	if fs.conn != nil {
 		return fs.conn.Close()
 	}
 	return nil
 }
 
-func (fs *sshFS) getDirCache(dirPath string) ([]os.FileInfo, bool) {
+func (fs *SSHFS) getDirCache(dirPath string) ([]os.FileInfo, bool) {
 	fs.dirCacheMu.Lock()
 	defer fs.dirCacheMu.Unlock()
 	entry, ok := fs.dirCache[dirPath]
@@ -121,7 +119,7 @@ func (fs *sshFS) getDirCache(dirPath string) ([]os.FileInfo, bool) {
 	return nil, false
 }
 
-func (fs *sshFS) setDirCache(dirPath string, entries []os.FileInfo) {
+func (fs *SSHFS) setDirCache(dirPath string, entries []os.FileInfo) {
 	fs.dirCacheMu.Lock()
 	defer fs.dirCacheMu.Unlock()
 	fs.dirCache[dirPath] = dirCacheEntry{
@@ -130,13 +128,13 @@ func (fs *sshFS) setDirCache(dirPath string, entries []os.FileInfo) {
 	}
 }
 
-func (fs *sshFS) clearDirCache() {
+func (fs *SSHFS) clearDirCache() {
 	fs.dirCacheMu.Lock()
 	defer fs.dirCacheMu.Unlock()
 	fs.dirCache = make(map[string]dirCacheEntry)
 }
 
-func (fs *sshFS) getParentDir(filePath string) (string, string, bool) {
+func (fs *SSHFS) getParentDir(filePath string) (string, string, bool) {
 	dirPath := path.Dir(filePath)
 	isRoot := isRootPath(filePath, fs.rootDir)
 	if isRoot {
@@ -149,7 +147,7 @@ func (fs *sshFS) getParentDir(filePath string) (string, string, bool) {
 	return dirPath, fullDirPath, isRoot
 }
 
-func (fs *sshFS) findInCache(filePath string, dirPath string) (nfsFs.FileInfo, bool) {
+func (fs *SSHFS) findInCache(filePath string, dirPath string) (nfsFs.FileInfo, bool) {
 	if filePath == "/" || filePath == "" {
 		return nil, false
 	}
@@ -166,17 +164,17 @@ func (fs *sshFS) findInCache(filePath string, dirPath string) (nfsFs.FileInfo, b
 	return nil, true // cache exists but file not found
 }
 
-func (fs *sshFS) populateDirCache(dirPath, fullDirPath string) {
+func (fs *SSHFS) populateDirCache(dirPath, fullDirPath string) {
 	if entries, err := fs.conn.ReadDir(fullDirPath); err == nil {
 		fs.setDirCache(dirPath, entries)
 	}
 }
 
-func (fs *sshFS) SetCreds(creds nfsFs.Creds) {
+func (fs *SSHFS) SetCreds(creds nfsFs.Creds) {
 	fs.creds = creds
 }
 
-func (fs *sshFS) Create(path string) (nfsFs.File, error) {
+func (fs *SSHFS) Create(path string) (nfsFs.File, error) {
 	if err := fs.ensureConnected(); err != nil {
 		return nil, err
 	}
@@ -188,7 +186,7 @@ func (fs *sshFS) Create(path string) (nfsFs.File, error) {
 	return &file{handle, fs.conn, fs, false, fullPath, fs.rootDir}, nil
 }
 
-func (fs *sshFS) MkdirAll(dirPath string, mode os.FileMode) error {
+func (fs *SSHFS) MkdirAll(dirPath string, mode os.FileMode) error {
 	if err := fs.ensureConnected(); err != nil {
 		return err
 	}
@@ -199,7 +197,7 @@ func (fs *sshFS) MkdirAll(dirPath string, mode os.FileMode) error {
 	return fs.conn.Chmod(fullPath, mode)
 }
 
-func (fs *sshFS) Open(filePath string) (nfsFs.File, error) {
+func (fs *SSHFS) Open(filePath string) (nfsFs.File, error) {
 	if err := fs.ensureConnected(); err != nil {
 		return nil, err
 	}
@@ -216,7 +214,7 @@ func (fs *sshFS) Open(filePath string) (nfsFs.File, error) {
 	return fs.newFile(handle, filePath, fullPath, info)
 }
 
-func (fs *sshFS) OpenFile(filePath string, flag int, mode os.FileMode) (nfsFs.File, error) {
+func (fs *SSHFS) OpenFile(filePath string, flag int, mode os.FileMode) (nfsFs.File, error) {
 	if err := fs.ensureConnected(); err != nil {
 		return nil, err
 	}
@@ -246,13 +244,13 @@ func (fs *sshFS) OpenFile(filePath string, flag int, mode os.FileMode) (nfsFs.Fi
 	return fs.newFile(handle, filePath, fullPath, info)
 }
 
-func (fs *sshFS) newFile(handle *sftp.File, filePath, fullPath string, info os.FileInfo) (nfsFs.File, error) {
+func (fs *SSHFS) newFile(handle *sftp.File, filePath, fullPath string, info os.FileInfo) (nfsFs.File, error) {
 	isRoot := isRootPath(filePath, fs.rootDir)
 	isSymlink := info.Mode()&os.ModeSymlink != 0
 	return &file{handle, fs.conn, fs, isRoot || (info.IsDir() && !isSymlink), fullPath, fs.rootDir}, nil
 }
 
-func (fs *sshFS) Stat(filePath string) (nfsFs.FileInfo, error) {
+func (fs *SSHFS) Stat(filePath string) (nfsFs.FileInfo, error) {
 	dirPath, fullDirPath, _ := fs.getParentDir(filePath)
 
 	if info, inCache := fs.findInCache(filePath, dirPath); inCache {
@@ -276,7 +274,7 @@ func (fs *sshFS) Stat(filePath string) (nfsFs.FileInfo, error) {
 	return newFileInfoWithPath(info, filePath, fs.rootDir), nil
 }
 
-func (fs *sshFS) Lstat(filePath string) (nfsFs.FileInfo, error) {
+func (fs *SSHFS) Lstat(filePath string) (nfsFs.FileInfo, error) {
 	dirPath, fullDirPath, _ := fs.getParentDir(filePath)
 
 	if info, inCache := fs.findInCache(filePath, dirPath); inCache {
@@ -300,7 +298,7 @@ func (fs *sshFS) Lstat(filePath string) (nfsFs.FileInfo, error) {
 	return newFileInfoWithPath(info, filePath, fs.rootDir), nil
 }
 
-func (fs *sshFS) Chmod(filePath string, mode os.FileMode) error {
+func (fs *SSHFS) Chmod(filePath string, mode os.FileMode) error {
 	if err := fs.ensureConnected(); err != nil {
 		return err
 	}
@@ -308,7 +306,7 @@ func (fs *sshFS) Chmod(filePath string, mode os.FileMode) error {
 	return fs.conn.Chmod(fullPath, mode)
 }
 
-func (fs *sshFS) Chown(filePath string, uid, gid int) error {
+func (fs *SSHFS) Chown(filePath string, uid, gid int) error {
 	if err := fs.ensureConnected(); err != nil {
 		return err
 	}
@@ -316,7 +314,7 @@ func (fs *sshFS) Chown(filePath string, uid, gid int) error {
 	return fs.conn.Chown(fullPath, uid, gid)
 }
 
-func (fs *sshFS) Symlink(oldname, newname string) error {
+func (fs *SSHFS) Symlink(oldname, newname string) error {
 	if err := fs.ensureConnected(); err != nil {
 		return err
 	}
@@ -324,7 +322,7 @@ func (fs *sshFS) Symlink(oldname, newname string) error {
 	return fs.conn.Symlink(oldname, fullNew)
 }
 
-func (fs *sshFS) Readlink(filePath string) (string, error) {
+func (fs *SSHFS) Readlink(filePath string) (string, error) {
 	if err := fs.ensureConnected(); err != nil {
 		return "", err
 	}
@@ -332,7 +330,7 @@ func (fs *sshFS) Readlink(filePath string) (string, error) {
 	return fs.conn.ReadLink(fullPath)
 }
 
-func (fs *sshFS) Link(oldname, newname string) error {
+func (fs *SSHFS) Link(oldname, newname string) error {
 	if err := fs.ensureConnected(); err != nil {
 		return err
 	}
@@ -341,7 +339,7 @@ func (fs *sshFS) Link(oldname, newname string) error {
 	return fs.conn.Link(oldPath, newPath)
 }
 
-func (fs *sshFS) Rename(oldname, newname string) error {
+func (fs *SSHFS) Rename(oldname, newname string) error {
 	if err := fs.ensureConnected(); err != nil {
 		return err
 	}
@@ -350,7 +348,7 @@ func (fs *sshFS) Rename(oldname, newname string) error {
 	return fs.conn.Rename(oldPath, newPath)
 }
 
-func (fs *sshFS) Remove(filePath string) error {
+func (fs *SSHFS) Remove(filePath string) error {
 	if err := fs.ensureConnected(); err != nil {
 		return err
 	}
@@ -358,7 +356,7 @@ func (fs *sshFS) Remove(filePath string) error {
 	return fs.conn.Remove(fullPath)
 }
 
-func (fs *sshFS) Attributes() *nfsFs.Attributes {
+func (fs *SSHFS) Attributes() *nfsFs.Attributes {
 	return &nfsFs.Attributes{
 		LinkSupport:     true,
 		SymlinkSupport:  true,
@@ -370,7 +368,7 @@ func (fs *sshFS) Attributes() *nfsFs.Attributes {
 	}
 }
 
-func (fs *sshFS) GetFileId(info nfsFs.FileInfo) uint64 {
+func (fs *SSHFS) GetFileId(info nfsFs.FileInfo) uint64 {
 	sys := info.Sys()
 	if sys == nil {
 		return hashPath(info.Name())
@@ -384,12 +382,12 @@ func (fs *sshFS) GetFileId(info nfsFs.FileInfo) uint64 {
 	return hashPath(info.Name())
 }
 
-func (fs *sshFS) GetRootHandle() []byte {
+func (fs *SSHFS) GetRootHandle() []byte {
 	h := encodePath(fs.rootDir)
 	return h
 }
 
-func (fs *sshFS) GetHandle(info nfsFs.FileInfo) ([]byte, error) {
+func (fs *SSHFS) GetHandle(info nfsFs.FileInfo) ([]byte, error) {
 	nfsPath := getNFSPath(info)
 	if nfsPath != "" {
 		return encodePath(nfsPath), nil
@@ -397,7 +395,7 @@ func (fs *sshFS) GetHandle(info nfsFs.FileInfo) ([]byte, error) {
 	return encodePath(info.Name()), nil
 }
 
-func (fs *sshFS) ResolveHandle(handle []byte) (string, error) {
+func (fs *SSHFS) ResolveHandle(handle []byte) (string, error) {
 	p := decodePath(handle)
 	if p == "" || string(handle) == "/" {
 		return fs.rootDir, nil
@@ -414,7 +412,7 @@ func isRootPath(p string, rootDir string) bool {
 	return cleanP == cleanRoot
 }
 
-func (fs *sshFS) resolvePath(p string) string {
+func (fs *SSHFS) resolvePath(p string) string {
 
 	if isRootPath(p, fs.rootDir) {
 		result := fs.rootDir

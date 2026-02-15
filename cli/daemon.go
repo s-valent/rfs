@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -22,13 +23,12 @@ import (
 )
 
 type nfsFileHandler struct {
-	w *os.File
+	w io.Writer
 }
 
 func (h *nfsFileHandler) Write(msg *nfsLog.Message) {
-	ts := time.Now().Format("2006.02.01 15:04:05")
+	ts := time.Now().Format("2006/01/02 15:04:05")
 	fmt.Fprintf(h.w, "%s [%s] <%s:%d> %s %s\n", ts, msg.Mod, msg.FileName, msg.LineNo, nfsLog.GetLevelName(msg.Lev), msg.Message)
-	h.w.Sync()
 }
 
 func newNFSLogger(file *os.File) nfsLog.Logger {
@@ -37,7 +37,7 @@ func newNFSLogger(file *os.File) nfsLog.Logger {
 
 type mount struct {
 	info      *MountInfo
-	logFile   *os.File
+	logFile   io.Closer
 	sshFS     *ssh.SSHFS
 	client    *ssh.SSHClient
 	mu        sync.Mutex
@@ -58,15 +58,45 @@ func NewDaemon() *Daemon {
 	}
 }
 
-func (d *Daemon) ensureDirs() error {
-	if err := os.MkdirAll(StateDir(), 0755); err != nil {
-		return err
+const maxLogSize = 10 * 1024 * 1024 // 10MB
+
+func (d *Daemon) openLogFile(name string) (*truncatingFile, error) {
+	logPath := filepath.Join(StateDir(), "mounts", name+".log")
+
+	os.Remove(logPath)
+
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return nil, err
 	}
+	return &truncatingFile{File: f, maxSize: maxLogSize}, nil
+}
+func (d *Daemon) ensureDirs() error {
 	mountsDir := filepath.Join(StateDir(), "mounts")
 	if err := os.MkdirAll(mountsDir, 0755); err != nil {
 		return err
 	}
 	return nil
+}
+
+func (d *Daemon) cleanupOldLogs() {
+	mountsDir := filepath.Join(StateDir(), "mounts")
+	today := time.Now().Format("2006-01-02")
+	entries, _ := os.ReadDir(mountsDir)
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".log") {
+			continue
+		}
+		path := filepath.Join(mountsDir, e.Name())
+		info, err := os.Stat(path)
+		if err != nil {
+			continue
+		}
+		modDate := info.ModTime().Format("2006-01-02")
+		if modDate != today {
+			os.Remove(path)
+		}
+	}
 }
 
 func (d *Daemon) cleanupStaleState() {
@@ -82,12 +112,48 @@ func (d *Daemon) cleanupStaleState() {
 	}
 }
 
+type truncatingFile struct {
+	*os.File
+	maxSize int64
+}
+
+func (f *truncatingFile) Write(p []byte) (int, error) {
+	if info, err := f.Stat(); err == nil && info.Size() >= f.maxSize {
+		content, err := os.ReadFile(f.Name())
+		if err != nil {
+			return 0, err
+		}
+
+		newContent := content[len(content)/2:]
+		if err := os.WriteFile(f.Name(), newContent, 0644); err != nil {
+			return 0, err
+		}
+
+		f.File.Close()
+		newFile, err := os.OpenFile(f.Name(), os.O_WRONLY|os.O_APPEND, 0644)
+		if err != nil {
+			return 0, err
+		}
+		*f.File = *newFile
+	}
+	_, err := f.Seek(0, 2)
+	if err != nil {
+		return 0, err
+	}
+	return f.File.Write(p)
+}
+
+func (f *truncatingFile) Close() error {
+	return f.File.Close()
+}
+
 func (d *Daemon) Start() error {
 	if err := d.ensureDirs(); err != nil {
 		return err
 	}
 
 	d.cleanupStaleState()
+	d.cleanupOldLogs()
 
 	if err := os.RemoveAll(d.socketPath); err != nil {
 		return err
@@ -156,9 +222,7 @@ func (d *Daemon) handleUp(cmd Command) Response {
 		return Response{Error: "already mounted: " + name}
 	}
 
-	logFile, err := os.OpenFile(
-		filepath.Join(StateDir(), "mounts", name+".log"),
-		os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	logFile, err := d.openLogFile(name)
 	if err != nil {
 		return Response{Error: "failed to create log: " + err.Error()}
 	}
@@ -179,7 +243,7 @@ func (d *Daemon) handleUp(cmd Command) Response {
 	return Response{OK: true, Mount: m.info}
 }
 
-func (d *Daemon) startMount(alias, remotePath, name, customMountDir string, logFile *os.File) (*mount, error) {
+func (d *Daemon) startMount(alias, remotePath, name, customMountDir string, logFile *truncatingFile) (*mount, error) {
 	log.SetOutput(logFile)
 
 	nfsLogger := nfsLog.NewLogger("nfs", nfsLog.INFO, &nfsFileHandler{logFile})
@@ -264,7 +328,7 @@ func (d *Daemon) startMount(alias, remotePath, name, customMountDir string, logF
 			SSHAlias:   alias,
 			RemotePath: remotePath,
 			StartedAt:  time.Now(),
-			LogFile:    logFile.Name(),
+			LogFile:    logFile.File.Name(),
 		},
 		logFile: logFile,
 		sshFS:   fs,

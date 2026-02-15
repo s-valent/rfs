@@ -147,6 +147,13 @@ func (fs *SSHFS) clearDirCache() {
 	fs.dirCache = make(map[string]dirCacheEntry)
 }
 
+func (fs *SSHFS) invalidateParentCache(filePath string) {
+	dirPath, _, _ := fs.getParentDir(filePath)
+	fs.dirCacheMu.Lock()
+	defer fs.dirCacheMu.Unlock()
+	delete(fs.dirCache, dirPath)
+}
+
 func (fs *SSHFS) getParentDir(filePath string) (string, string, bool) {
 	dirPath := path.Dir(filePath)
 	isRoot := isRootPath(filePath, fs.rootDir)
@@ -196,6 +203,7 @@ func (fs *SSHFS) Create(path string) (nfsFs.File, error) {
 	if err != nil {
 		return nil, err
 	}
+	fs.invalidateParentCache(path)
 	return &file{handle, fs.conn, fs, false, fullPath, fs.rootDir}, nil
 }
 
@@ -379,7 +387,12 @@ func (fs *SSHFS) Rename(oldname, newname string) error {
 	}
 	oldPath := fs.resolvePath(oldname)
 	newPath := fs.resolvePath(newname)
-	return fs.conn.Rename(oldPath, newPath)
+	err := fs.conn.Rename(oldPath, newPath)
+	if err == nil {
+		fs.invalidateParentCache(oldname)
+		fs.invalidateParentCache(newname)
+	}
+	return err
 }
 
 func (fs *SSHFS) Remove(filePath string) error {
@@ -387,7 +400,11 @@ func (fs *SSHFS) Remove(filePath string) error {
 		return err
 	}
 	fullPath := fs.resolvePath(filePath)
-	return fs.conn.Remove(fullPath)
+	err := fs.conn.Remove(fullPath)
+	if err == nil {
+		fs.invalidateParentCache(filePath)
+	}
+	return err
 }
 
 func (fs *SSHFS) Attributes() *nfsFs.Attributes {

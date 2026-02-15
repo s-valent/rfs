@@ -88,7 +88,7 @@ func main() {
 	cleanup := func() {
 		if mounted {
 			log.Printf("Unmounting %s...\n", mountDir)
-			cmd := exec.Command("umount", mountDir)
+			cmd := exec.Command("umount", "-f", mountDir)
 			cmd.Stdout = os.Stdout
 			cmd.Stderr = os.Stderr
 			if err := cmd.Run(); err != nil {
@@ -175,7 +175,7 @@ func main() {
 	if err := mountCmd.Run(); err != nil {
 		log.Printf("Mount failed: %v\n", err)
 		log.Printf("Trying to unmount if already mounted...")
-		exec.Command("umount", mountDir).Run()
+		exec.Command("umount", "-f", mountDir).Run()
 		if err := mountCmd.Run(); err != nil {
 			cleanup()
 			log.Fatalf("Mount failed: %v\n", err)

@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	ssh "remote-fs/ssh"
+	ssh "rfs/ssh"
 
 	"github.com/smallfz/libnfs-go/auth"
 	"github.com/smallfz/libnfs-go/backend"
@@ -41,7 +41,7 @@ var binaryName string
 
 func init() {
 	home, _ := os.UserHomeDir()
-	stateDir = filepath.Join(home, ".remote-fs")
+	stateDir = filepath.Join(home, ".rfs")
 	binaryName = filepath.Base(os.Args[0])
 	if binaryName == "." || binaryName == "" {
 		binaryName = "rfs"

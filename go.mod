@@ -1,4 +1,4 @@
-module remote-fs
+module rfs
 
 go 1.25.6
 

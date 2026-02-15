@@ -2,6 +2,7 @@ package ssh
 
 import (
 	"path"
+	"strings"
 
 	"github.com/pkg/sftp"
 	nfsFs "github.com/smallfz/libnfs-go/fs"
@@ -12,6 +13,7 @@ type file struct {
 	client   *sftp.Client
 	isDir    bool
 	fullPath string
+	rootDir  string
 }
 
 func (f *file) Close() error {
@@ -39,7 +41,16 @@ func (f *file) Stat() (nfsFs.FileInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newFileInfo(info), nil
+	nfsPath := f.fullPath
+	if f.rootDir != "" && strings.HasPrefix(f.fullPath, f.rootDir) {
+		rel := strings.TrimPrefix(f.fullPath, f.rootDir)
+		if rel == "" {
+			nfsPath = "/"
+		} else {
+			nfsPath = rel
+		}
+	}
+	return newFileInfoWithPath(info, nfsPath, f.rootDir), nil
 }
 
 func (f *file) Truncate() error {
@@ -72,7 +83,7 @@ func (f *file) Readdir(n int) ([]nfsFs.FileInfo, error) {
 	result := make([]nfsFs.FileInfo, len(entries))
 	for i, entry := range entries {
 		entryPath := path.Join(dirPath, entry.Name())
-		result[i] = newFileInfoWithPath(entry, entryPath)
+		result[i] = newFileInfoWithPath(entry, entryPath, f.rootDir)
 	}
 	return result, nil
 }

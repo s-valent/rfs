@@ -113,7 +113,7 @@ func (fs *sshFS) Create(path string) (nfsFs.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &file{handle, fs.conn, false, fullPath}, nil
+	return &file{handle, fs.conn, false, fullPath, fs.rootDir}, nil
 }
 
 func (fs *sshFS) MkdirAll(dirPath string, mode os.FileMode) error {
@@ -141,8 +141,9 @@ func (fs *sshFS) Open(filePath string) (nfsFs.File, error) {
 		handle.Close()
 		return nil, err
 	}
+	isRoot := isRootPath(filePath, fs.rootDir)
 	isSymlink := info.Mode()&os.ModeSymlink != 0
-	return &file{handle, fs.conn, info.IsDir() && !isSymlink, fullPath}, nil
+	return &file{handle, fs.conn, isRoot || (info.IsDir() && !isSymlink), fullPath, fs.rootDir}, nil
 }
 
 func (fs *sshFS) OpenFile(filePath string, flag int, mode os.FileMode) (nfsFs.File, error) {
@@ -162,8 +163,9 @@ func (fs *sshFS) OpenFile(filePath string, flag int, mode os.FileMode) (nfsFs.Fi
 			handle.Close()
 			return nil, err
 		}
+		isRoot := isRootPath(filePath, fs.rootDir)
 		isSymlink := info.Mode()&os.ModeSymlink != 0
-		return &file{handle, fs.conn, info.IsDir() && !isSymlink, fullPath}, nil
+		return &file{handle, fs.conn, isRoot || (info.IsDir() && !isSymlink), fullPath, fs.rootDir}, nil
 	}
 
 	handle, err := fs.conn.OpenFile(fullPath, flag)
@@ -175,8 +177,9 @@ func (fs *sshFS) OpenFile(filePath string, flag int, mode os.FileMode) (nfsFs.Fi
 		handle.Close()
 		return nil, err
 	}
+	isRoot := isRootPath(filePath, fs.rootDir)
 	isSymlink := info.Mode()&os.ModeSymlink != 0
-	return &file{handle, fs.conn, info.IsDir() && !isSymlink, fullPath}, nil
+	return &file{handle, fs.conn, isRoot || (info.IsDir() && !isSymlink), fullPath, fs.rootDir}, nil
 }
 
 func (fs *sshFS) Stat(filePath string) (nfsFs.FileInfo, error) {
@@ -188,7 +191,7 @@ func (fs *sshFS) Stat(filePath string) (nfsFs.FileInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newFileInfoWithPath(info, filePath), nil
+	return newFileInfoWithPath(info, filePath, fs.rootDir), nil
 }
 
 func (fs *sshFS) Lstat(filePath string) (nfsFs.FileInfo, error) {
@@ -200,7 +203,7 @@ func (fs *sshFS) Lstat(filePath string) (nfsFs.FileInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newFileInfoWithPath(info, filePath), nil
+	return newFileInfoWithPath(info, filePath, fs.rootDir), nil
 }
 
 func (fs *sshFS) Chmod(filePath string, mode os.FileMode) error {
@@ -307,9 +310,18 @@ func (fs *sshFS) ResolveHandle(handle []byte) (string, error) {
 	return p, nil
 }
 
+func isRootPath(p string, rootDir string) bool {
+	if p == "" || p == "." || p == "/" || p == "~" {
+		return true
+	}
+	cleanRoot := path.Clean(rootDir)
+	cleanP := path.Clean(p)
+	return cleanP == cleanRoot
+}
+
 func (fs *sshFS) resolvePath(p string) string {
 
-	if p == "" || p == "." || p == "/" {
+	if isRootPath(p, fs.rootDir) {
 		result := fs.rootDir
 		return result
 	}
@@ -349,13 +361,14 @@ func newFileInfo(info os.FileInfo) nfsFs.FileInfo {
 	return &fileInfoWrapper{info: info}
 }
 
-func newFileInfoWithPath(info os.FileInfo, nfsPath string) nfsFs.FileInfo {
-	return &fileInfoWrapper{info: info, nfsPath: nfsPath}
+func newFileInfoWithPath(info os.FileInfo, nfsPath string, rootDir string) nfsFs.FileInfo {
+	return &fileInfoWrapper{info: info, nfsPath: nfsPath, rootDir: rootDir}
 }
 
 type fileInfoWrapper struct {
 	info    os.FileInfo
 	nfsPath string
+	rootDir string
 }
 
 func (f *fileInfoWrapper) Name() string {
@@ -370,10 +383,15 @@ func (f *fileInfoWrapper) Mode() os.FileMode {
 	mode := f.info.Mode()
 
 	if mode&os.ModeSymlink != 0 {
+		if isRootPath(f.nfsPath, f.rootDir) {
+			if f.info.IsDir() {
+				return mode | os.ModeDir
+			}
+		}
 		return mode
 	}
 
-	if f.info.IsDir() {
+	if f.IsDir() {
 		if mode&os.ModeDir == 0 {
 			mode = mode | os.ModeDir
 		}
@@ -387,6 +405,9 @@ func (f *fileInfoWrapper) ModTime() time.Time {
 }
 
 func (f *fileInfoWrapper) IsDir() bool {
+	if isRootPath(f.nfsPath, f.rootDir) {
+		return true
+	}
 	if f.info.Mode()&os.ModeSymlink != 0 {
 		return false
 	}

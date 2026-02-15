@@ -34,6 +34,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuViewDelegate {
     var statusItem: NSStatusItem?
     var popover: NSPopover?
     var serverStore = ServerStore()
+    var eventMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -44,11 +45,32 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuViewDelegate {
         }
 
         popover = NSPopover()
-        popover?.contentSize = NSSize(width: 320, height: 400)
+        popover?.contentSize = NSSize(width: 320, height: 280)
         popover?.behavior = .transient
+        popover?.animates = true
         
         let menuView = MenuView(delegate: self, serverStore: serverStore)
-        popover?.contentViewController = NSHostingController(rootView: menuView)
+        let hostingController = NSHostingController(rootView: menuView)
+        hostingController.view.wantsLayer = true
+        hostingController.view.layer?.backgroundColor = NSColor.clear.cgColor
+        popover?.contentViewController = hostingController
+        
+        eventMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            if let popover = self?.popover, popover.isShown {
+                popover.performClose(nil)
+            }
+        }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        if let monitor = eventMonitor {
+            NSEvent.removeMonitor(monitor)
+            eventMonitor = nil
+        }
+        for (_, instance) in serverStore.servers {
+            instance.process?.terminate()
+        }
+        serverStore.servers.removeAll()
     }
 
     @objc func togglePopover() {
@@ -58,13 +80,24 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuViewDelegate {
                 popover.performClose(nil)
             } else {
                 popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    popover.contentViewController?.view.window?.makeFirstResponder(nil)
+                }
             }
         }
     }
+    
+    func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
+        return true
+    }
 
     func startServer(config: ServerConfig) {
-        if serverStore.servers[config.id] != nil {
+        if let existing = serverStore.servers[config.id], existing.process?.isRunning == true {
             return
+        }
+        
+        if serverStore.servers[config.id] != nil {
+            serverStore.servers[config.id] = nil
         }
         
         let goBinary = Bundle.main.bundlePath + "/Contents/MacOS/remote-fs"
@@ -86,11 +119,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuViewDelegate {
         process.arguments = args
         
         process.currentDirectoryURL = URL(fileURLWithPath: NSHomeDirectory())
-        
-        let outputPipe = Pipe()
-        let errorPipe = Pipe()
-        process.standardOutput = outputPipe
-        process.standardError = errorPipe
         
         let instance = ServerInstance(config: config)
         instance.status = .starting

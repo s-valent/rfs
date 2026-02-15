@@ -148,6 +148,9 @@ func (fs *sshFS) getParentDir(filePath string) (string, string, bool) {
 }
 
 func (fs *sshFS) findInCache(filePath string, dirPath string) (nfsFs.FileInfo, bool) {
+	if filePath == "/" || filePath == "" {
+		return nil, false
+	}
 	entries, ok := fs.getDirCache(dirPath)
 	if !ok {
 		return nil, false
@@ -380,7 +383,8 @@ func (fs *sshFS) GetFileId(info nfsFs.FileInfo) uint64 {
 }
 
 func (fs *sshFS) GetRootHandle() []byte {
-	return []byte(fs.rootDir)
+	h := encodePath(fs.rootDir)
+	return h
 }
 
 func (fs *sshFS) GetHandle(info nfsFs.FileInfo) ([]byte, error) {

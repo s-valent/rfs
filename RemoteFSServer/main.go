@@ -56,16 +56,22 @@ func main() {
 		remotePath = parts[1]
 	} else {
 		sshAlias = target
-		remotePath = "/"
+		remotePath = "~"
 	}
 
 	remotePath = strings.TrimRight(remotePath, "/")
+	if remotePath == "" {
+		remotePath = "/"
+	}
 
 	var mountDir string
 	if len(args) >= 2 {
 		mountDir = args[1]
 	} else {
 		safePath := strings.ReplaceAll(remotePath, "/", ":")
+		if safePath == ":" {
+			safePath = "root"
+		}
 		tmpDir := filepath.Join(os.TempDir(), fmt.Sprintf("%s %s", sshAlias, safePath))
 		if err := os.MkdirAll(tmpDir, 0755); err != nil {
 			log.Fatalf("Failed to create temp mount directory: %v", err)

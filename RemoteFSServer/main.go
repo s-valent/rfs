@@ -59,6 +59,8 @@ func main() {
 		remotePath = "/"
 	}
 
+	remotePath = strings.TrimRight(remotePath, "/")
+
 	var mountDir string
 	if len(args) >= 2 {
 		mountDir = args[1]

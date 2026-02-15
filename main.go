@@ -565,9 +565,9 @@ func printUsage() {
 	fmt.Println("")
 	fmt.Println("Commands:")
 	fmt.Println("  up <alias>[:<path>] [mountpoint]   Mount a remote directory")
-	fmt.Println("  ls                               List all mounts")
-	fmt.Println("  down <alias>[:<path>]            Stop a mount")
-	fmt.Println("  logs <alias>[:<path>]            Show logs for a mount")
+	fmt.Println("  ls                                 List all mounts")
+	fmt.Println("  down <alias>[:<path>]              Stop a mount")
+	fmt.Println("  logs <alias>[:<path>]              Show logs for a mount")
 }
 
 func parseTarget(target string) (alias, path string) {

@@ -11,6 +11,7 @@ import (
 type file struct {
 	handle   *sftp.File
 	client   *sftp.Client
+	fs       *sshFS
 	isDir    bool
 	fullPath string
 	rootDir  string
@@ -75,10 +76,21 @@ func (f *file) Readdir(n int) ([]nfsFs.FileInfo, error) {
 		dirPath = f.handle.Name()
 	}
 
+	if entries, ok := f.fs.getDirCache(dirPath); ok {
+		result := make([]nfsFs.FileInfo, len(entries))
+		for i, entry := range entries {
+			entryPath := path.Join(dirPath, entry.Name())
+			result[i] = newFileInfoWithPath(entry, entryPath, f.rootDir)
+		}
+		return result, nil
+	}
+
 	entries, err := f.client.ReadDir(dirPath)
 	if err != nil {
 		return nil, err
 	}
+
+	f.fs.setDirCache(dirPath, entries)
 
 	result := make([]nfsFs.FileInfo, len(entries))
 	for i, entry := range entries {

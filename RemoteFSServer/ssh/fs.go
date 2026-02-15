@@ -9,6 +9,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pkg/sftp"
@@ -32,11 +33,18 @@ func init() {
 	}
 }
 
+type dirCacheEntry struct {
+	entries []os.FileInfo
+	expiry  time.Time
+}
+
 type sshFS struct {
-	conn    *sftp.Client
-	client  *sshClient
-	creds   nfsFs.Creds
-	rootDir string
+	conn       *sftp.Client
+	client     *sshClient
+	creds      nfsFs.Creds
+	rootDir    string
+	dirCache   map[string]dirCacheEntry
+	dirCacheMu sync.Mutex
 }
 
 func (fs *sshFS) reconnect() error {
@@ -48,6 +56,7 @@ func (fs *sshFS) reconnect() error {
 	}
 
 	fs.conn = newConn
+	fs.clearDirCache()
 	log.Printf("SFTP reconnected")
 	return nil
 }
@@ -90,7 +99,7 @@ func (c *sshClient) NewFS(rootDir string) (*sshFS, error) {
 		}
 		rootDir = root
 	}
-	return &sshFS{conn, c, nil, rootDir}, nil
+	return &sshFS{conn, c, nil, rootDir, make(map[string]dirCacheEntry), sync.Mutex{}}, nil
 }
 
 func (fs *sshFS) Close() error {
@@ -98,6 +107,31 @@ func (fs *sshFS) Close() error {
 		return fs.conn.Close()
 	}
 	return nil
+}
+
+func (fs *sshFS) getDirCache(dirPath string) ([]os.FileInfo, bool) {
+	fs.dirCacheMu.Lock()
+	defer fs.dirCacheMu.Unlock()
+	entry, ok := fs.dirCache[dirPath]
+	if ok && time.Now().Before(entry.expiry) {
+		return entry.entries, true
+	}
+	return nil, false
+}
+
+func (fs *sshFS) setDirCache(dirPath string, entries []os.FileInfo) {
+	fs.dirCacheMu.Lock()
+	defer fs.dirCacheMu.Unlock()
+	fs.dirCache[dirPath] = dirCacheEntry{
+		entries: entries,
+		expiry:  time.Now().Add(5 * time.Second),
+	}
+}
+
+func (fs *sshFS) clearDirCache() {
+	fs.dirCacheMu.Lock()
+	defer fs.dirCacheMu.Unlock()
+	fs.dirCache = make(map[string]dirCacheEntry)
 }
 
 func (fs *sshFS) SetCreds(creds nfsFs.Creds) {
@@ -113,7 +147,7 @@ func (fs *sshFS) Create(path string) (nfsFs.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &file{handle, fs.conn, false, fullPath, fs.rootDir}, nil
+	return &file{handle, fs.conn, fs, false, fullPath, fs.rootDir}, nil
 }
 
 func (fs *sshFS) MkdirAll(dirPath string, mode os.FileMode) error {
@@ -143,7 +177,7 @@ func (fs *sshFS) Open(filePath string) (nfsFs.File, error) {
 	}
 	isRoot := isRootPath(filePath, fs.rootDir)
 	isSymlink := info.Mode()&os.ModeSymlink != 0
-	return &file{handle, fs.conn, isRoot || (info.IsDir() && !isSymlink), fullPath, fs.rootDir}, nil
+	return &file{handle, fs.conn, fs, isRoot || (info.IsDir() && !isSymlink), fullPath, fs.rootDir}, nil
 }
 
 func (fs *sshFS) OpenFile(filePath string, flag int, mode os.FileMode) (nfsFs.File, error) {
@@ -165,7 +199,7 @@ func (fs *sshFS) OpenFile(filePath string, flag int, mode os.FileMode) (nfsFs.Fi
 		}
 		isRoot := isRootPath(filePath, fs.rootDir)
 		isSymlink := info.Mode()&os.ModeSymlink != 0
-		return &file{handle, fs.conn, isRoot || (info.IsDir() && !isSymlink), fullPath, fs.rootDir}, nil
+		return &file{handle, fs.conn, fs, isRoot || (info.IsDir() && !isSymlink), fullPath, fs.rootDir}, nil
 	}
 
 	handle, err := fs.conn.OpenFile(fullPath, flag)
@@ -179,30 +213,94 @@ func (fs *sshFS) OpenFile(filePath string, flag int, mode os.FileMode) (nfsFs.Fi
 	}
 	isRoot := isRootPath(filePath, fs.rootDir)
 	isSymlink := info.Mode()&os.ModeSymlink != 0
-	return &file{handle, fs.conn, isRoot || (info.IsDir() && !isSymlink), fullPath, fs.rootDir}, nil
+	return &file{handle, fs.conn, fs, isRoot || (info.IsDir() && !isSymlink), fullPath, fs.rootDir}, nil
 }
 
 func (fs *sshFS) Stat(filePath string) (nfsFs.FileInfo, error) {
+	dirPath := path.Dir(filePath)
+	isRoot := isRootPath(filePath, fs.rootDir)
+	if isRoot {
+		dirPath = path.Dir(fs.rootDir)
+	}
+
+	if entries, ok := fs.getDirCache(dirPath); ok {
+		baseName := path.Base(filePath)
+		for _, e := range entries {
+			if e.Name() == baseName {
+				return newFileInfoWithPath(e, filePath, fs.rootDir), nil
+			}
+		}
+		return nil, os.ErrNotExist
+	}
+
 	if err := fs.ensureConnected(); err != nil {
 		return nil, err
 	}
 	fullPath := fs.resolvePath(filePath)
 	info, err := fs.conn.Lstat(fullPath)
 	if err != nil {
+		fullDirPath := fs.resolvePath(dirPath)
+		if isRoot {
+			fullDirPath = path.Dir(fs.rootDir)
+		}
+		if entries, rerr := fs.conn.ReadDir(fullDirPath); rerr == nil {
+			fs.setDirCache(dirPath, entries)
+		}
 		return nil, err
 	}
+
+	fullDirPath := fs.resolvePath(dirPath)
+	if isRoot {
+		fullDirPath = path.Dir(fs.rootDir)
+	}
+	if entries, err := fs.conn.ReadDir(fullDirPath); err == nil {
+		fs.setDirCache(dirPath, entries)
+	}
+
 	return newFileInfoWithPath(info, filePath, fs.rootDir), nil
 }
 
 func (fs *sshFS) Lstat(filePath string) (nfsFs.FileInfo, error) {
+	dirPath := path.Dir(filePath)
+	isRoot := isRootPath(filePath, fs.rootDir)
+	if isRoot {
+		dirPath = path.Dir(fs.rootDir)
+	}
+
+	if entries, ok := fs.getDirCache(dirPath); ok {
+		baseName := path.Base(filePath)
+		for _, e := range entries {
+			if e.Name() == baseName {
+				return newFileInfoWithPath(e, filePath, fs.rootDir), nil
+			}
+		}
+		return nil, os.ErrNotExist
+	}
+
 	if err := fs.ensureConnected(); err != nil {
 		return nil, err
 	}
 	fullPath := fs.resolvePath(filePath)
 	info, err := fs.conn.Lstat(fullPath)
 	if err != nil {
+		fullDirPath := fs.resolvePath(dirPath)
+		if isRoot {
+			fullDirPath = path.Dir(fs.rootDir)
+		}
+		if entries, rerr := fs.conn.ReadDir(fullDirPath); rerr == nil {
+			fs.setDirCache(dirPath, entries)
+		}
 		return nil, err
 	}
+
+	fullDirPath := fs.resolvePath(dirPath)
+	if isRoot {
+		fullDirPath = path.Dir(fs.rootDir)
+	}
+	if entries, err := fs.conn.ReadDir(fullDirPath); err == nil {
+		fs.setDirCache(dirPath, entries)
+	}
+
 	return newFileInfoWithPath(info, filePath, fs.rootDir), nil
 }
 

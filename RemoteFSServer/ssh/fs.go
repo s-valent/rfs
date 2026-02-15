@@ -38,6 +38,8 @@ type dirCacheEntry struct {
 	expiry  time.Time
 }
 
+type SSHFS = sshFS
+
 type sshFS struct {
 	conn       *sftp.Client
 	client     *sshClient

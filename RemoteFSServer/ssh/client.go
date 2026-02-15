@@ -127,3 +127,5 @@ func (c *sshClient) SetConn(conn *ssh.Client) {
 	defer c.mu.Unlock()
 	c.conn = conn
 }
+
+type SSHClient = sshClient

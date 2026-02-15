@@ -85,7 +85,11 @@ func (f *file) Readdir(n int) ([]nfsFs.FileInfo, error) {
 		return result, nil
 	}
 
-	entries, err := f.client.ReadDir(dirPath)
+	if err := f.fs.ensureConnected(); err != nil {
+		return nil, err
+	}
+
+	entries, err := f.fs.conn.ReadDir(dirPath)
 	if err != nil {
 		return nil, err
 	}

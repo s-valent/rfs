@@ -65,11 +65,11 @@ func (c *SSHClient) EnsureConnected() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.conn != nil {
-		return nil
+	if c.conn == nil {
+		return c.reconnectNoLock()
 	}
 
-	return c.reconnectNoLock()
+	return nil
 }
 
 func (c *SSHClient) reconnectNoLock() error {

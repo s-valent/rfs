@@ -50,6 +50,10 @@ type SSHFS struct {
 func (fs *SSHFS) reconnect() error {
 	log.Printf("SFTP connection lost, reconnecting...")
 
+	if err := fs.client.EnsureConnected(); err != nil {
+		return fmt.Errorf("ssh reconnect failed: %w", err)
+	}
+
 	newConn, err := sftp.NewClient(fs.client.GetConn())
 	if err != nil {
 		return err
@@ -62,15 +66,24 @@ func (fs *SSHFS) reconnect() error {
 }
 
 func (fs *SSHFS) ensureConnected() error {
-	if fs.conn != nil {
-		return nil
+	if fs.conn == nil {
+		return fs.reconnect()
 	}
-	return fs.reconnect()
+	_, err := fs.conn.Lstat(".")
+	if err != nil {
+		log.Printf("SFTP connection stale, reconnecting...")
+		return fs.reconnect()
+	}
+	return nil
 }
 
 func (fs *SSHFS) doWithReconnect(fn func(*sftp.Client) error) error {
 	err := fn(fs.conn)
 	if err != nil {
+		errStr := err.Error()
+		if strings.Contains(errStr, "file does not exist") || strings.Contains(errStr, "no such file") {
+			return err
+		}
 		log.Printf("SFTP operation failed: %v, reconnecting...", err)
 		if reerr := fs.reconnect(); reerr != nil {
 			return fmt.Errorf("operation failed: %v, reconnection failed: %w", err, reerr)
@@ -194,7 +207,8 @@ func (fs *SSHFS) MkdirAll(dirPath string, mode os.FileMode) error {
 	if err := fs.conn.MkdirAll(fullPath); err != nil {
 		return err
 	}
-	return fs.conn.Chmod(fullPath, mode)
+	fs.populateDirCache(path.Dir(dirPath), path.Dir(fullPath))
+	return nil
 }
 
 func (fs *SSHFS) Open(filePath string) (nfsFs.File, error) {
@@ -202,16 +216,25 @@ func (fs *SSHFS) Open(filePath string) (nfsFs.File, error) {
 		return nil, err
 	}
 	fullPath := fs.resolvePath(filePath)
-	handle, err := fs.conn.Open(fullPath)
-	if err != nil {
-		return nil, err
-	}
-	info, err := fs.conn.Lstat(fullPath)
-	if err != nil {
-		handle.Close()
-		return nil, err
-	}
-	return fs.newFile(handle, filePath, fullPath, info)
+	var result nfsFs.File
+	err := fs.doWithReconnect(func(conn *sftp.Client) error {
+		handle, err := conn.Open(fullPath)
+		if err != nil {
+			return err
+		}
+		info, err := conn.Lstat(fullPath)
+		if err != nil {
+			handle.Close()
+			return err
+		}
+		f, err := fs.newFile(handle, filePath, fullPath, info)
+		if err != nil {
+			return err
+		}
+		result = f
+		return nil
+	})
+	return result, err
 }
 
 func (fs *SSHFS) OpenFile(filePath string, flag int, mode os.FileMode) (nfsFs.File, error) {
@@ -220,28 +243,37 @@ func (fs *SSHFS) OpenFile(filePath string, flag int, mode os.FileMode) (nfsFs.Fi
 	}
 	fullPath := fs.resolvePath(filePath)
 
-	var handle *sftp.File
-	var err error
+	var result nfsFs.File
+	err := fs.doWithReconnect(func(conn *sftp.Client) error {
+		var handle *sftp.File
+		var err error
 
-	if flag&os.O_CREATE != 0 {
-		handle, err = fs.conn.Create(fullPath)
-		if err != nil {
-			return nil, err
+		if flag&os.O_CREATE != 0 {
+			handle, err = conn.Create(fullPath)
+			if err != nil {
+				return err
+			}
+			conn.Chmod(fullPath, mode)
+		} else {
+			handle, err = conn.OpenFile(fullPath, flag)
+			if err != nil {
+				return err
+			}
 		}
-		fs.conn.Chmod(fullPath, mode)
-	} else {
-		handle, err = fs.conn.OpenFile(fullPath, flag)
-		if err != nil {
-			return nil, err
-		}
-	}
 
-	info, err := fs.conn.Lstat(fullPath)
-	if err != nil {
-		handle.Close()
-		return nil, err
-	}
-	return fs.newFile(handle, filePath, fullPath, info)
+		info, err := conn.Lstat(fullPath)
+		if err != nil {
+			handle.Close()
+			return err
+		}
+		f, err := fs.newFile(handle, filePath, fullPath, info)
+		if err != nil {
+			return err
+		}
+		result = f
+		return nil
+	})
+	return result, err
 }
 
 func (fs *SSHFS) newFile(handle *sftp.File, filePath, fullPath string, info os.FileInfo) (nfsFs.File, error) {
@@ -260,18 +292,19 @@ func (fs *SSHFS) Stat(filePath string) (nfsFs.FileInfo, error) {
 		return nil, os.ErrNotExist
 	}
 
-	if err := fs.ensureConnected(); err != nil {
-		return nil, err
-	}
 	fullPath := fs.resolvePath(filePath)
-	info, err := fs.conn.Lstat(fullPath)
-	if err != nil {
+	var result nfsFs.FileInfo
+	err := fs.doWithReconnect(func(conn *sftp.Client) error {
+		info, err := conn.Lstat(fullPath)
+		if err != nil {
+			fs.populateDirCache(dirPath, fullDirPath)
+			return err
+		}
 		fs.populateDirCache(dirPath, fullDirPath)
-		return nil, err
-	}
-
-	fs.populateDirCache(dirPath, fullDirPath)
-	return newFileInfoWithPath(info, filePath, fs.rootDir), nil
+		result = newFileInfoWithPath(info, filePath, fs.rootDir)
+		return nil
+	})
+	return result, err
 }
 
 func (fs *SSHFS) Lstat(filePath string) (nfsFs.FileInfo, error) {
@@ -284,18 +317,19 @@ func (fs *SSHFS) Lstat(filePath string) (nfsFs.FileInfo, error) {
 		return nil, os.ErrNotExist
 	}
 
-	if err := fs.ensureConnected(); err != nil {
-		return nil, err
-	}
 	fullPath := fs.resolvePath(filePath)
-	info, err := fs.conn.Lstat(fullPath)
-	if err != nil {
+	var result nfsFs.FileInfo
+	err := fs.doWithReconnect(func(conn *sftp.Client) error {
+		info, err := conn.Lstat(fullPath)
+		if err != nil {
+			fs.populateDirCache(dirPath, fullDirPath)
+			return err
+		}
 		fs.populateDirCache(dirPath, fullDirPath)
-		return nil, err
-	}
-
-	fs.populateDirCache(dirPath, fullDirPath)
-	return newFileInfoWithPath(info, filePath, fs.rootDir), nil
+		result = newFileInfoWithPath(info, filePath, fs.rootDir)
+		return nil
+	})
+	return result, err
 }
 
 func (fs *SSHFS) Chmod(filePath string, mode os.FileMode) error {

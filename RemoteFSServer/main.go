@@ -18,22 +18,42 @@ import (
 	"github.com/smallfz/libnfs-go/auth"
 	"github.com/smallfz/libnfs-go/backend"
 	nfsFs "github.com/smallfz/libnfs-go/fs"
+	nfsLog "github.com/smallfz/libnfs-go/log"
 	"github.com/smallfz/libnfs-go/server"
 )
 
+type nfsFileHandler struct {
+	w *os.File
+}
+
+func (h *nfsFileHandler) Write(msg *nfsLog.Message) {
+	ts := time.Now().Format("2006.02.01 15:04:05")
+	fmt.Fprintf(h.w, "%s [%s] <%s:%d> %s %s\n", ts, msg.Mod, msg.FileName, msg.LineNo, nfsLog.GetLevelName(msg.Lev), msg.Message)
+	h.w.Sync()
+}
+
+func newNFSLogger(file *os.File) nfsLog.Logger {
+	return nfsLog.NewLogger("nfs", nfsLog.INFO, &nfsFileHandler{file})
+}
+
 var stateDir string
+var binaryName string
 
 func init() {
 	home, _ := os.UserHomeDir()
 	stateDir = filepath.Join(home, ".remote-fs")
+	binaryName = filepath.Base(os.Args[0])
+	if binaryName == "." || binaryName == "" {
+		binaryName = "rfs"
+	}
 }
 
 type Command struct {
-	Type       string `json:"type"`
-	Name       string `json:"name"`
-	SSHAlias   string `json:"sshAlias"`
-	RemotePath string `json:"remotePath"`
-	MountDir   string `json:"mountDir,omitempty"`
+	Type       string   `json:"type"`
+	Names      []string `json:"names,omitempty"`
+	SSHAlias   string   `json:"sshAlias"`
+	RemotePath string   `json:"remotePath"`
+	MountDir   string   `json:"mountDir,omitempty"`
 }
 
 type Response struct {
@@ -41,6 +61,7 @@ type Response struct {
 	Error  string       `json:"error,omitempty"`
 	Mount  *MountInfo   `json:"mount,omitempty"`
 	Mounts []*MountInfo `json:"mounts,omitempty"`
+	Names  []string     `json:"names,omitempty"`
 }
 
 type MountInfo struct {
@@ -119,8 +140,6 @@ func (d *Daemon) Start() error {
 
 	os.Chmod(d.socketPath, 0777)
 
-	log.Println("Daemon started, socket:", d.socketPath)
-
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -141,20 +160,27 @@ func (d *Daemon) handleConn(conn net.Conn) {
 
 	var resp Response
 	switch cmd.Type {
-	case "start":
-		resp = d.handleStart(cmd)
-	case "list":
+	case "up":
+		resp = d.handleUp(cmd)
+	case "ls":
 		resp = d.handleList()
-	case "stop":
-		resp = d.handleStop(cmd.Name)
+	case "down":
+		resp = d.handleStop(cmd.Names)
 	default:
 		resp = Response{Error: "unknown command"}
 	}
 
 	json.NewEncoder(conn).Encode(resp)
+
+	d.mu.Lock()
+	hasMounts := len(d.mounts) > 0
+	d.mu.Unlock()
+	if !hasMounts {
+		os.Exit(0)
+	}
 }
 
-func (d *Daemon) handleStart(cmd Command) Response {
+func (d *Daemon) handleUp(cmd Command) Response {
 	alias := cmd.SSHAlias
 	remotePath := cmd.RemotePath
 	customMountDir := cmd.MountDir
@@ -190,6 +216,12 @@ func (d *Daemon) handleStart(cmd Command) Response {
 }
 
 func (d *Daemon) startMount(alias, remotePath, name, customMountDir string, logFile *os.File) (*mount, error) {
+	log.SetOutput(logFile)
+
+	nfsLogger := nfsLog.NewLogger("nfs", nfsLog.INFO, &nfsFileHandler{logFile})
+	nfsLog.SetLoggerDefault(nfsLogger)
+	nfsLog.SetLevelName("info")
+
 	listen, err := findFreePort()
 	if err != nil {
 		return nil, err
@@ -256,7 +288,7 @@ func (d *Daemon) startMount(alias, remotePath, name, customMountDir string, logF
 	mountCmd.Stdout = logFile
 	mountCmd.Stderr = logFile
 	if err := mountCmd.Run(); err != nil {
-		logFile.WriteString(fmt.Sprintf("Mount failed: %v\n", err))
+		fmt.Fprintf(logFile, "Mount failed: %v\n", err)
 	}
 
 	m := &mount{
@@ -289,37 +321,46 @@ func (d *Daemon) handleList() Response {
 	return Response{OK: true, Mounts: list}
 }
 
-func (d *Daemon) handleStop(name string) Response {
-	d.mu.Lock()
-	m, ok := d.mounts[name]
-	d.mu.Unlock()
-	if !ok {
-		return Response{Error: "not found: " + name}
+func (d *Daemon) handleStop(names []string) Response {
+	if len(names) == 0 {
+		d.mu.Lock()
+		for n := range d.mounts {
+			names = append(names, n)
+		}
+		d.mu.Unlock()
 	}
 
-	// Unmount
-	exec.Command("umount", "-f", m.info.MountDir).Run()
+	var stopped []string
+	for _, name := range names {
+		d.mu.Lock()
+		m, ok := d.mounts[name]
+		d.mu.Unlock()
+		if !ok {
+			continue
+		}
 
-	// Close SSH
-	if m.sshFS != nil {
-		m.sshFS.Close()
+		exec.Command("umount", "-f", m.info.MountDir).Run()
+
+		if m.sshFS != nil {
+			m.sshFS.Close()
+		}
+		if m.client != nil {
+			m.client.Close()
+		}
+		if m.logFile != nil {
+			m.logFile.Close()
+		}
+
+		os.RemoveAll(m.info.MountDir)
+
+		d.mu.Lock()
+		delete(d.mounts, name)
+		d.mu.Unlock()
+		d.deleteState(name)
+		stopped = append(stopped, name)
 	}
-	if m.client != nil {
-		m.client.Close()
-	}
-	if m.logFile != nil {
-		m.logFile.Close()
-	}
 
-	// Remove mount dir
-	os.RemoveAll(m.info.MountDir)
-
-	d.mu.Lock()
-	delete(d.mounts, name)
-	d.mu.Unlock()
-	d.deleteState(name)
-
-	return Response{OK: true}
+	return Response{OK: true, Names: stopped}
 }
 
 func (d *Daemon) saveState(name string, info *MountInfo) {
@@ -358,10 +399,9 @@ func connect() net.Conn {
 	socketPath := filepath.Join(stateDir, "daemon.sock")
 	conn, err := net.Dial("unix", socketPath)
 	if err != nil {
-		fmt.Println("Daemon not running, starting...")
 		startDaemon()
-		for i := 0; i < 10; i++ {
-			time.Sleep(500 * time.Millisecond)
+		for range 20 {
+			time.Sleep(50 * time.Millisecond)
 			conn, err = net.Dial("unix", socketPath)
 			if err == nil {
 				return conn
@@ -406,28 +446,25 @@ func runCLI() {
 	args = args[1:]
 
 	switch cmd {
-	case "start":
-		if len(args) < 1 {
-			fmt.Println("Usage: rfs start <alias>[:<path>] [mountpoint]")
+	case "up":
+		if (len(args) < 1) || (len(args) > 2) {
+			fmt.Println("Usage:", binaryName, "up <alias>[:<path>] [mountpoint]")
 			os.Exit(1)
 		}
 		alias, path := parseTarget(args[0])
 		mountDir := ""
-		if len(args) >= 2 {
+		if len(args) == 2 {
 			mountDir = args[1]
 		}
-		resp := sendCmd(Command{Type: "mount", SSHAlias: alias, RemotePath: path, MountDir: mountDir})
+		resp := sendCmd(Command{Type: "up", SSHAlias: alias, RemotePath: path, MountDir: mountDir})
 		if resp.Error != "" {
 			fmt.Println("Error:", resp.Error)
 			os.Exit(1)
 		}
-		_ = mountDir // TODO: pass to daemon
-		fmt.Println("Mounted:", resp.Mount.Name)
-		fmt.Println("  Mount point:", resp.Mount.MountDir)
-		fmt.Println("  NFS:", "localhost:"+resp.Mount.Port)
+		fmt.Printf("%s:%s  port:%s  %s\n", resp.Mount.SSHAlias, resp.Mount.RemotePath, resp.Mount.Port, resp.Mount.MountDir)
 
-	case "list":
-		resp := sendCmd(Command{Type: "list"})
+	case "ls":
+		resp := sendCmd(Command{Type: "ls"})
 		if resp.Error != "" {
 			fmt.Println("Error:", resp.Error)
 			os.Exit(1)
@@ -436,26 +473,28 @@ func runCLI() {
 			fmt.Println("No mounts")
 			return
 		}
+		fmt.Printf("%-20s %-6s %s\n", "ALIAS:PATH", "PORT", "MOUNT")
 		for _, m := range resp.Mounts {
-			fmt.Printf("%s:%s  %s  port:%s  dir:%s\n", m.SSHAlias, m.RemotePath, m.Name, m.Port, m.MountDir)
+			fmt.Printf("%-20s %-6s %s\n", m.SSHAlias+":"+m.RemotePath, m.Port, m.MountDir)
 		}
 
-	case "stop":
-		if len(args) < 1 {
-			fmt.Println("Usage: rfs stop <alias>[:<path>]")
-			os.Exit(1)
+	case "down":
+		var names []string
+		for _, arg := range args {
+			names = append(names, resolveMountName(arg))
 		}
-		name := resolveMountName(args[0])
-		resp := sendCmd(Command{Type: "stop", Name: name})
+		resp := sendCmd(Command{Type: "down", Names: names})
 		if resp.Error != "" {
 			fmt.Println("Error:", resp.Error)
 			os.Exit(1)
 		}
-		fmt.Println("Stopped:", args[0])
+		for _, n := range resp.Names {
+			fmt.Println(n, "stopped")
+		}
 
 	case "logs":
-		if len(args) < 1 {
-			fmt.Println("Usage: rfs logs <alias>[:<path>]")
+		if len(args) != 1 {
+			fmt.Println("Usage:", binaryName, "logs <alias>[:<path>]")
 			os.Exit(1)
 		}
 		name := resolveMountName(args[0])
@@ -475,16 +514,17 @@ func runCLI() {
 }
 
 func printUsage() {
-	fmt.Println("Usage: rfs <command>")
+	fmt.Println("Usage:", binaryName, "<command>")
 	fmt.Println("")
 	fmt.Println("Commands:")
-	fmt.Println("  mount <alias>[:<path>]   Mount a remote directory")
-	fmt.Println("  list                     List all mounts")
-	fmt.Println("  stop <name>              Stop a mount")
-	fmt.Println("  logs <name>              Show logs for a mount")
+	fmt.Println("  up <alias>[:<path>] [mountpoint]   Mount a remote directory")
+	fmt.Println("  ls                               List all mounts")
+	fmt.Println("  down <alias>[:<path>]            Stop a mount")
+	fmt.Println("  logs <alias>[:<path>]            Show logs for a mount")
 }
 
 func parseTarget(target string) (alias, path string) {
+	target = strings.TrimRight(target, "/")
 	for i := 0; i < len(target); i++ {
 		if target[i] == ':' {
 			return target[:i], target[i+1:]
@@ -501,7 +541,7 @@ func resolveMountName(target string) string {
 func main() {
 	if len(os.Args) >= 2 {
 		switch os.Args[1] {
-		case "start", "list", "stop", "logs":
+		case "up", "ls", "down", "logs":
 			runCLI()
 			return
 		case "daemon":

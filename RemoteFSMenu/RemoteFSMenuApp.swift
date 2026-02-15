@@ -1,7 +1,7 @@
 import SwiftUI
 import os.log
 
-let logger = Logger(subsystem: "com.remotefs.menu", category: "AppDelegate")
+let logger = Logger(subsystem: "com.remotefs.app", category: "AppDelegate")
 
 @main
 struct RemoteFSMenuApp: App {
@@ -14,17 +14,28 @@ struct RemoteFSMenuApp: App {
     }
 }
 
+class ServerStore: ObservableObject {
+    @Published var servers: [UUID: ServerInstance] = [:]
+}
+
+class ServerInstance: Identifiable, ObservableObject {
+    let id: UUID
+    let config: ServerConfig
+    var process: Process?
+    @Published var status: HealthStatus = .stopped
+    
+    init(config: ServerConfig) {
+        self.id = config.id
+        self.config = config
+    }
+}
+
 class AppDelegate: NSObject, NSApplicationDelegate, MenuViewDelegate {
     var statusItem: NSStatusItem?
     var popover: NSPopover?
-    var serverProcess: Process?
-    var serverTimer: Timer?
-    var currentConfig: ServerConfig?
-    var healthStatus: HealthStatus = .stopped
+    var serverStore = ServerStore()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        logger.info("App launched")
-        
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         
         if let button = statusItem?.button {
@@ -33,12 +44,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuViewDelegate {
         }
 
         popover = NSPopover()
-        popover?.contentSize = NSSize(width: 300, height: 400)
+        popover?.contentSize = NSSize(width: 320, height: 400)
         popover?.behavior = .transient
         
-        let menuView = MenuView(delegate: self)
+        let menuView = MenuView(delegate: self, serverStore: serverStore)
         popover?.contentViewController = NSHostingController(rootView: menuView)
-        logger.info("Popover initialized with delegate")
     }
 
     @objc func togglePopover() {
@@ -53,21 +63,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuViewDelegate {
     }
 
     func startServer(config: ServerConfig) {
-        logger.info("startServer called with config: \(config.sshAlias):\(config.remotePath)")
-        
-        stopServer()
-        
-        currentConfig = config
-        healthStatus = .starting
+        if serverStore.servers[config.id] != nil {
+            return
+        }
         
         let goBinary = Bundle.main.bundlePath + "/Contents/MacOS/remote-fs"
-        logger.info("Go binary path: \(goBinary)")
         
-        // Check if binary exists
         let fileManager = FileManager.default
         if !fileManager.fileExists(atPath: goBinary) {
-            logger.error("Binary does not exist at path: \(goBinary)")
-            healthStatus = .error("Binary not found")
+            let instance = ServerInstance(config: config)
+            instance.status = .error("Binary not found")
+            serverStore.servers[config.id] = instance
             return
         }
         
@@ -79,73 +85,72 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuViewDelegate {
         }
         process.arguments = args
         
-        logger.info("Full command: \(goBinary) \(config.sshAlias):\(config.remotePath) \"\(config.mountPath)\"")
-        
         process.currentDirectoryURL = URL(fileURLWithPath: NSHomeDirectory())
-        
-        var env = ProcessInfo.processInfo.environment
-        env["SSH_AUTH_SOCK"] = ProcessInfo.processInfo.environment["SSH_AUTH_SOCK"]
-        process.environment = env
         
         let outputPipe = Pipe()
         let errorPipe = Pipe()
         process.standardOutput = outputPipe
         process.standardError = errorPipe
         
-        let outputLog = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("remote-fs.log")
-        FileManager.default.createFile(atPath: outputLog.path, contents: nil)
-        let logHandle = FileHandle(forWritingAtPath: outputLog.path)
+        let instance = ServerInstance(config: config)
+        instance.status = .starting
+        instance.process = process
         
-        outputPipe.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            if let output = String(data: data, encoding: .utf8), !output.isEmpty {
-                logger.info("Server output: \(output)")
-                logHandle?.write(data)
-            }
-        }
-        
-        errorPipe.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            if let output = String(data: data, encoding: .utf8), !output.isEmpty {
-                logger.error("Server error: \(output)")
-                logHandle?.write(data)
-            }
-        }
-        
-        process.terminationHandler = { proc in
+        process.terminationHandler = { [weak self] proc in
             let status = proc.terminationStatus
-            logger.info("Process terminated with status: \(status)")
-            DispatchQueue.main.async { [weak self] in
-                if self?.serverProcess?.isRunning == true {
-                    self?.healthStatus = .running
+            DispatchQueue.main.async {
+                if status == 0 {
+                    self?.serverStore.servers[config.id]?.status = .stopped
                 } else {
-                    self?.healthStatus = .error("Exit code: \(status)")
+                    self?.serverStore.servers[config.id]?.status = .error("Exit code: \(status)")
                 }
+                self?.serverStore.objectWillChange.send()
             }
         }
         
         do {
             try process.run()
-            serverProcess = process
-            logger.info("Process started successfully")
+            serverStore.servers[config.id] = instance
         } catch {
-            logger.error("Failed to start process: \(error.localizedDescription)")
-            healthStatus = .error(error.localizedDescription)
+            let errInstance = ServerInstance(config: config)
+            errInstance.status = .error(error.localizedDescription)
+            serverStore.servers[config.id] = errInstance
         }
     }
 
-    func stopServer() {
-        serverProcess?.terminate()
-        serverProcess = nil
-        healthStatus = .stopped
-        logger.info("Server stopped")
+    func stopServer(config: ServerConfig) {
+        if let instance = serverStore.servers[config.id] {
+            instance.process?.terminate()
+            serverStore.servers[config.id] = nil
+        }
     }
 
     func checkHealth() {
-        guard let process = serverProcess, process.isRunning else {
-            healthStatus = .stopped
-            return
+        var changed = false
+        for (id, instance) in serverStore.servers {
+            if let process = instance.process, process.isRunning {
+                if case .running = instance.status {
+                } else {
+                    instance.status = .running
+                    changed = true
+                }
+            } else if case .starting = instance.status {
+            } else if case .error = instance.status {
+            } else {
+                if case .stopped = instance.status {
+                } else {
+                    instance.status = .stopped
+                    changed = true
+                }
+            }
+            serverStore.servers[id] = instance
         }
-        healthStatus = .running
+        if changed {
+            serverStore.objectWillChange.send()
+        }
+    }
+    
+    func getStatus(for configId: UUID) -> HealthStatus {
+        return serverStore.servers[configId]?.status ?? .stopped
     }
 }

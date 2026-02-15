@@ -1,18 +1,18 @@
-.PHONY: project server build release run clean
+.PHONY: project build release run clean
 
 project:
 	xcodegen generate
 
 build: project
-	xcodebuild -project RemoteFSMenu.xcodeproj -scheme RemoteFSMenu -configuration Debug -derivedDataPath .build build
+	xcodebuild -project RemoteFS.xcodeproj -scheme RemoteFS -configuration Debug -derivedDataPath .build build
 
 release: project
-	xcodebuild -project RemoteFSMenu.xcodeproj -scheme RemoteFSMenu -configuration Release -derivedDataPath .build build
+	xcodebuild -project RemoteFS.xcodeproj -scheme RemoteFS -configuration Release -derivedDataPath .build build
 
 run: build
-	open .build/Build/Products/Debug/RemoteFSMenu.app
+	open .build/Build/Products/Debug/RemoteFS.app
 
 clean:
 	rm -rf .build
-	rm -rf RemoteFSMenu.xcodeproj
+	rm -rf RemoteFS.xcodeproj
 	rm -rf RemoteFSMenu/Resources

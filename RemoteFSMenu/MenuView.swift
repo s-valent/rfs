@@ -1,7 +1,4 @@
 import SwiftUI
-import os.log
-
-let menuLogger = Logger(subsystem: "com.remotefs.menu", category: "MenuView")
 
 enum HealthStatus {
     case stopped
@@ -12,24 +9,23 @@ enum HealthStatus {
 
 protocol MenuViewDelegate: AnyObject {
     func startServer(config: ServerConfig)
-    func stopServer()
+    func stopServer(config: ServerConfig)
     func checkHealth()
-    var healthStatus: HealthStatus { get }
-    var currentConfig: ServerConfig? { get }
+    func getStatus(for configId: UUID) -> HealthStatus
 }
 
 struct MenuView: View {
     weak var delegate: MenuViewDelegate?
+    @ObservedObject var serverStore: ServerStore
     @StateObject private var store = ServerConfigStore()
     @State private var isAdding = false
     @State private var editingConfig: ServerConfig?
+    @State private var refreshTimer: Timer?
+    @State private var showingError = false
+    @State private var errorMessage = ""
     
     var body: some View {
         VStack(spacing: 0) {
-            headerView
-            
-            Divider()
-            
             if store.configs.isEmpty {
                 emptyStateView
             } else {
@@ -40,7 +36,13 @@ struct MenuView: View {
             
             footerView
         }
-        .frame(width: 300, height: 400)
+        .frame(width: 320, height: 400)
+        .background(Color(NSColor.windowBackgroundColor))
+        .alert("Error", isPresented: $showingError) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(errorMessage)
+        }
         .sheet(isPresented: $isAdding) {
             ConfigEditorView(config: ServerConfig()) { newConfig in
                 store.add(newConfig)
@@ -53,41 +55,14 @@ struct MenuView: View {
                 editingConfig = nil
             }
         }
-    }
-    
-    private var headerView: some View {
-        HStack {
-            Text("Remote FS")
-                .font(.headline)
-            Spacer()
-            statusIndicator
-        }
-        .padding()
-    }
-    
-    private var statusIndicator: some View {
-        Group {
-            switch delegate?.healthStatus ?? .stopped {
-            case .stopped:
-                Circle()
-                    .fill(Color.gray)
-                    .frame(width: 10, height: 10)
-            case .starting:
-                Circle()
-                    .fill(Color.orange)
-                    .frame(width: 10, height: 10)
-            case .running:
-                Circle()
-                    .fill(Color.green)
-                    .frame(width: 10, height: 10)
-            case .error(let msg):
-                Circle()
-                    .fill(Color.red)
-                    .frame(width: 10, height: 10)
-                Text(msg)
-                    .font(.caption)
-                    .foregroundColor(.red)
+        .onAppear {
+            refreshTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
+                self.serverStore.objectWillChange.send()
+                delegate?.checkHealth()
             }
+        }
+        .onDisappear {
+            refreshTimer?.invalidate()
         }
     }
     
@@ -97,7 +72,7 @@ struct MenuView: View {
             Image(systemName: "externaldrive.badge.questionmark")
                 .font(.system(size: 40))
                 .foregroundColor(.secondary)
-            Text("No connections configured")
+            Text("No connections")
                 .foregroundColor(.secondary)
             Button("Add Connection") {
                 isAdding = true
@@ -111,23 +86,18 @@ struct MenuView: View {
             ForEach(store.configs) { config in
                 ConfigRowView(
                     config: config,
-                    isActive: delegate?.currentConfig?.id == config.id && {
-                        if case .running = delegate?.healthStatus {
-                            return true
-                        }
-                        return false
-                    }(),
+                    healthStatus: serverStore.servers[config.id]?.status ?? .stopped,
                     onStart: {
-                        menuLogger.info("Start button pressed for config: \(config.sshAlias)")
                         delegate?.startServer(config: config)
                     },
                     onStop: {
-                        delegate?.stopServer()
+                        delegate?.stopServer(config: config)
                     },
                     onEdit: {
                         editingConfig = config
                     },
                     onDelete: {
+                        delegate?.stopServer(config: config)
                         if let idx = store.configs.firstIndex(where: { $0.id == config.id }) {
                             store.remove(at: idx)
                         }
@@ -147,14 +117,6 @@ struct MenuView: View {
             
             Spacer()
             
-            if let status = delegate?.healthStatus, case .running = status {
-                Button("Stop") {
-                    delegate?.stopServer()
-                }
-                .buttonStyle(.bordered)
-                .tint(.red)
-            }
-            
             Button("Quit") {
                 NSApplication.shared.terminate(nil)
             }
@@ -166,60 +128,78 @@ struct MenuView: View {
 
 struct ConfigRowView: View {
     let config: ServerConfig
-    let isActive: Bool
+    let healthStatus: HealthStatus
     let onStart: () -> Void
     let onStop: () -> Void
     let onEdit: () -> Void
     let onDelete: () -> Void
     
+    private var isActive: Bool {
+        if case .running = healthStatus { return true }
+        return false
+    }
+    
+    private var statusText: String {
+        switch healthStatus {
+        case .stopped: return "Stopped"
+        case .starting: return "Starting..."
+        case .running: return "Running"
+        case .error(let msg): return msg
+        }
+    }
+    
     var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
                 Text(config.sshAlias)
                     .font(.headline)
+                Spacer()
+                Text(statusText)
+                    .font(.caption)
+                    .foregroundColor(statusColor)
+            }
+            
+            HStack {
                 Text(config.remotePath)
                     .font(.caption)
                     .foregroundColor(.secondary)
-            }
-            
-            Spacer()
-            
-            if isActive {
-                Text("Active")
-                    .font(.caption)
-                    .foregroundColor(.green)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Color.green.opacity(0.2))
-                    .cornerRadius(4)
-            }
-            
-            if isActive {
-                Button(action: onStop) {
-                    Image(systemName: "stop.fill")
-                        .foregroundColor(.red)
+                Spacer()
+                if isActive {
+                    Button("Stop") {
+                        onStop()
+                    }
+                    .buttonStyle(.bordered)
+                } else {
+                    Button("Start") {
+                        onStart()
+                    }
+                    .buttonStyle(.bordered)
                 }
-                .buttonStyle(.borderless)
-            } else {
-                Button(action: onStart) {
-                    Image(systemName: "play.fill")
-                        .foregroundColor(.green)
+            }
+            
+            HStack {
+                Button("Edit") {
+                    onEdit()
                 }
+                .font(.caption)
+                .buttonStyle(.borderless)
+                Button("Delete") {
+                    onDelete()
+                }
+                .font(.caption)
                 .buttonStyle(.borderless)
             }
-            
-            Button(action: onEdit) {
-                Image(systemName: "pencil")
-            }
-            .buttonStyle(.borderless)
-            
-            Button(action: onDelete) {
-                Image(systemName: "trash")
-                    .foregroundColor(.red)
-            }
-            .buttonStyle(.borderless)
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 8)
+    }
+    
+    private var statusColor: Color {
+        switch healthStatus {
+        case .stopped: return .secondary
+        case .starting: return .orange
+        case .running: return .green
+        case .error: return .red
+        }
     }
 }
 
@@ -236,7 +216,7 @@ struct ConfigEditorView: View {
             Form {
                 TextField("SSH Alias:", text: $config.sshAlias)
                 TextField("Remote Path:", text: $config.remotePath)
-                TextField("Mount Path:", text: $config.mountPath)
+                TextField("Mount Path (optional):", text: $config.mountPath)
             }
             .formStyle(.grouped)
             

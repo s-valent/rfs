@@ -1,4 +1,4 @@
-name: RemoteFSMenu
+name: RemoteFS
 options:
   bundleIdPrefix: com.remotefs
   deploymentTarget:
@@ -12,7 +12,7 @@ settings:
     MACOSX_DEPLOYMENT_TARGET: "13.0"
 
 targets:
-  RemoteFSMenu:
+  RemoteFS:
     type: application
     platform: macOS
     sources:
@@ -21,7 +21,7 @@ targets:
           - "**/.DS_Store"
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.remotefs.menu
+        PRODUCT_BUNDLE_IDENTIFIER: com.remotefs.app
         INFOPLIST_FILE: RemoteFSMenu/Info.plist
         CODE_SIGN_IDENTITY: "-"
         CODE_SIGNING_REQUIRED: NO
@@ -32,26 +32,30 @@ targets:
         script: |
           cd "$SRCROOT/RemoteFSServer"
           go build -o "$BUILT_PRODUCTS_DIR/remote-fs" .
+    postBuildScripts:
+      - name: Copy Go Binary
+        script: |
+          cp "$BUILT_PRODUCTS_DIR/remote-fs" "$BUILT_PRODUCTS_DIR/$PRODUCT_NAME.app/Contents/MacOS/"
     info:
       path: RemoteFSMenu/Info.plist
       properties:
-        CFBundleName: RemoteFSMenu
-        CFBundleDisplayName: Remote FS
-        CFBundleIdentifier: com.remotefs.menu
+        CFBundleName: RemoteFS
+        CFBundleDisplayName: RemoteFS
+        CFBundleIdentifier: com.remotefs.app
         CFBundleVersion: "1"
         CFBundleShortVersionString: "1.0"
         CFBundlePackageType: APPL
-        CFBundleExecutable: RemoteFSMenu
+        CFBundleExecutable: RemoteFS
         LSMinimumSystemVersion: "13.0"
         LSUIElement: true
         NSHighResolutionCapable: true
         NSPrincipalClass: NSApplication
 
 schemes:
-  RemoteFSMenu:
+  RemoteFS:
     build:
       targets:
-        RemoteFSMenu: all
+        RemoteFS: all
     run:
       config: Debug
     archive:

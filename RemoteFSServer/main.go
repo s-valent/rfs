@@ -76,12 +76,13 @@ type MountInfo struct {
 }
 
 type mount struct {
-	info    *MountInfo
-	logFile *os.File
-	sshFS   *ssh.SSHFS
-	client  *ssh.SSHClient
-	mu      sync.Mutex
-	stopped bool
+	info      *MountInfo
+	logFile   *os.File
+	sshFS     *ssh.SSHFS
+	client    *ssh.SSHClient
+	mu        sync.Mutex
+	stopped   bool
+	createdAt time.Time
 }
 
 type Daemon struct {
@@ -139,6 +140,8 @@ func (d *Daemon) Start() error {
 	defer ln.Close()
 
 	os.Chmod(d.socketPath, 0777)
+
+	go d.monitorMounts()
 
 	for {
 		conn, err := ln.Accept()
@@ -207,6 +210,7 @@ func (d *Daemon) handleUp(cmd Command) Response {
 	}
 
 	d.mu.Lock()
+	m.createdAt = time.Now()
 	d.mounts[name] = m
 	d.mu.Unlock()
 
@@ -370,6 +374,49 @@ func (d *Daemon) saveState(name string, info *MountInfo) {
 
 func (d *Daemon) deleteState(name string) {
 	os.Remove(filepath.Join(stateDir, "mounts", name+".state"))
+}
+
+func (d *Daemon) cleanupDisconnected() {
+	d.mu.Lock()
+	var toStop []string
+	for name, m := range d.mounts {
+		if time.Since(m.createdAt) < 10*time.Second {
+			continue
+		}
+		connected := m.client == nil || m.client.IsConnected()
+		mounted := isMounted(m.info.MountDir)
+		if !connected {
+			toStop = append(toStop, name)
+			log.Printf("cleanup: %s disconnected", name)
+			continue
+		}
+		if !mounted {
+			toStop = append(toStop, name)
+			log.Printf("cleanup: %s not mounted (path=%s)", name, m.info.MountDir)
+		}
+	}
+	d.mu.Unlock()
+
+	for _, name := range toStop {
+		d.handleStop([]string{name})
+	}
+}
+
+func isMounted(path string) bool {
+	out, err := exec.Command("mount").Output()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(out), " on "+path+" ")
+}
+
+func (d *Daemon) monitorMounts() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		d.cleanupDisconnected()
+	}
 }
 
 func mountName(alias, path string) string {

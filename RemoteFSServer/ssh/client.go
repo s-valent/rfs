@@ -9,21 +9,21 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-type sshClient struct {
+type SSHClient struct {
 	alias string
 	conn  *ssh.Client
 	mu    sync.Mutex
 }
 
-func Connect(alias string) (*sshClient, error) {
+func Connect(alias string) (*SSHClient, error) {
 	conn, err := getConn(alias)
 	if err != nil {
 		return nil, err
 	}
-	return &sshClient{alias: alias, conn: conn}, nil
+	return &SSHClient{alias: alias, conn: conn}, nil
 }
 
-func (c *sshClient) Close() error {
+func (c *SSHClient) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.conn != nil {
@@ -32,7 +32,7 @@ func (c *sshClient) Close() error {
 	return nil
 }
 
-func (c *sshClient) NewSession() (*ssh.Session, error) {
+func (c *SSHClient) NewSession() (*ssh.Session, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.conn != nil {
@@ -41,10 +41,10 @@ func (c *sshClient) NewSession() (*ssh.Session, error) {
 	return nil, fmt.Errorf("not connected")
 }
 
-func (c *sshClient) reconnect() error {
+func (c *SSHClient) reconnect() error {
 	log.Printf("Attempting to reconnect to %s...", c.alias)
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		conn, err := getConn(c.alias)
 		if err == nil {
 			c.conn = conn
@@ -61,7 +61,7 @@ func (c *sshClient) reconnect() error {
 	return fmt.Errorf("failed to reconnect after 5 attempts")
 }
 
-func (c *sshClient) EnsureConnected() error {
+func (c *SSHClient) EnsureConnected() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -72,10 +72,10 @@ func (c *sshClient) EnsureConnected() error {
 	return c.reconnectNoLock()
 }
 
-func (c *sshClient) reconnectNoLock() error {
+func (c *SSHClient) reconnectNoLock() error {
 	log.Printf("Attempting to reconnect to %s...", c.alias)
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		conn, err := getConn(c.alias)
 		if err == nil {
 			c.conn = conn
@@ -92,7 +92,7 @@ func (c *sshClient) reconnectNoLock() error {
 	return fmt.Errorf("failed to reconnect after 5 attempts")
 }
 
-func (c *sshClient) WithReconnect(fn func(*ssh.Client) error) error {
+func (c *SSHClient) WithReconnect(fn func(*ssh.Client) error) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -116,16 +116,20 @@ func (c *sshClient) WithReconnect(fn func(*ssh.Client) error) error {
 	return nil
 }
 
-func (c *sshClient) GetConn() *ssh.Client {
+func (c *SSHClient) GetConn() *ssh.Client {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.conn
 }
 
-func (c *sshClient) SetConn(conn *ssh.Client) {
+func (c *SSHClient) SetConn(conn *ssh.Client) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.conn = conn
 }
 
-type SSHClient = sshClient
+func (c *SSHClient) IsConnected() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.conn != nil
+}

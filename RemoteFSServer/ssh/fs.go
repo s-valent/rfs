@@ -42,7 +42,7 @@ type SSHFS = sshFS
 
 type sshFS struct {
 	conn       *sftp.Client
-	client     *sshClient
+	client     *SSHClient
 	creds      nfsFs.Creds
 	rootDir    string
 	dirCache   map[string]dirCacheEntry
@@ -82,7 +82,7 @@ func (fs *sshFS) doWithReconnect(fn func(*sftp.Client) error) error {
 	return nil
 }
 
-func (c *sshClient) NewFS(rootDir string) (*sshFS, error) {
+func (c *SSHClient) NewFS(rootDir string) (*sshFS, error) {
 	conn, err := sftp.NewClient(c.conn)
 	if err != nil {
 		return nil, err

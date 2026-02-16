@@ -92,40 +92,10 @@ func (c *SSHClient) reconnectNoLock() error {
 	return fmt.Errorf("failed to reconnect after 5 attempts")
 }
 
-func (c *SSHClient) WithReconnect(fn func(*ssh.Client) error) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.conn == nil {
-		if err := c.reconnectNoLock(); err != nil {
-			return err
-		}
-	}
-
-	err := fn(c.conn)
-	if err != nil {
-		log.Printf("Operation failed, attempting reconnect: %v", err)
-		c.conn = nil
-		if reerr := c.reconnectNoLock(); reerr != nil {
-			return fmt.Errorf("operation failed: %v, reconnection also failed: %w", err, reerr)
-		}
-
-		return fn(c.conn)
-	}
-
-	return nil
-}
-
 func (c *SSHClient) GetConn() *ssh.Client {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.conn
-}
-
-func (c *SSHClient) SetConn(conn *ssh.Client) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.conn = conn
 }
 
 func (c *SSHClient) IsConnected() bool {

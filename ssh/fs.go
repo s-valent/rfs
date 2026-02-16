@@ -16,8 +16,8 @@ import (
 	nfsFs "github.com/smallfz/libnfs-go/fs"
 )
 
-var currentUID uint32
-var currentGID uint32
+var currentUID = uint32(501)
+var currentGID = uint32(20)
 
 func init() {
 	if u, err := user.Current(); err == nil {
@@ -27,9 +27,6 @@ func init() {
 		if gid, err := strconv.ParseUint(u.Gid, 10, 32); err == nil {
 			currentGID = uint32(gid)
 		}
-	} else {
-		currentUID = 501
-		currentGID = 20
 	}
 }
 
@@ -148,13 +145,13 @@ func (fs *SSHFS) clearDirCache() {
 }
 
 func (fs *SSHFS) invalidateParentCache(filePath string) {
-	dirPath, _, _ := fs.getParentDir(filePath)
+	dirPath, _ := fs.getParentDir(filePath)
 	fs.dirCacheMu.Lock()
 	defer fs.dirCacheMu.Unlock()
 	delete(fs.dirCache, dirPath)
 }
 
-func (fs *SSHFS) getParentDir(filePath string) (string, string, bool) {
+func (fs *SSHFS) getParentDir(filePath string) (string, string) {
 	dirPath := path.Dir(filePath)
 	isRoot := isRootPath(filePath, fs.rootDir)
 	if isRoot {
@@ -164,7 +161,7 @@ func (fs *SSHFS) getParentDir(filePath string) (string, string, bool) {
 	if isRoot {
 		fullDirPath = path.Dir(fs.rootDir)
 	}
-	return dirPath, fullDirPath, isRoot
+	return dirPath, fullDirPath
 }
 
 func (fs *SSHFS) findInCache(filePath string, dirPath string) (nfsFs.FileInfo, bool) {
@@ -291,7 +288,7 @@ func (fs *SSHFS) newFile(handle *sftp.File, filePath, fullPath string, info os.F
 }
 
 func (fs *SSHFS) Stat(filePath string) (nfsFs.FileInfo, error) {
-	dirPath, fullDirPath, _ := fs.getParentDir(filePath)
+	dirPath, fullDirPath := fs.getParentDir(filePath)
 
 	if info, inCache := fs.findInCache(filePath, dirPath); inCache {
 		if info != nil {
@@ -316,7 +313,7 @@ func (fs *SSHFS) Stat(filePath string) (nfsFs.FileInfo, error) {
 }
 
 func (fs *SSHFS) Lstat(filePath string) (nfsFs.FileInfo, error) {
-	dirPath, fullDirPath, _ := fs.getParentDir(filePath)
+	dirPath, fullDirPath := fs.getParentDir(filePath)
 
 	if info, inCache := fs.findInCache(filePath, dirPath); inCache {
 		if info != nil {
@@ -502,28 +499,28 @@ func (fs *SSHFS) resolvePath(p string) string {
 }
 
 func newFileInfo(info os.FileInfo) nfsFs.FileInfo {
-	return &fileInfoWrapper{info: info}
+	return &fileInfo{info: info}
 }
 
 func newFileInfoWithPath(info os.FileInfo, nfsPath string, rootDir string) nfsFs.FileInfo {
-	return &fileInfoWrapper{info: info, nfsPath: nfsPath, rootDir: rootDir}
+	return &fileInfo{info: info, nfsPath: nfsPath, rootDir: rootDir}
 }
 
-type fileInfoWrapper struct {
+type fileInfo struct {
 	info    os.FileInfo
 	nfsPath string
 	rootDir string
 }
 
-func (f *fileInfoWrapper) Name() string {
+func (f *fileInfo) Name() string {
 	return f.info.Name()
 }
 
-func (f *fileInfoWrapper) Size() int64 {
+func (f *fileInfo) Size() int64 {
 	return f.info.Size()
 }
 
-func (f *fileInfoWrapper) Mode() os.FileMode {
+func (f *fileInfo) Mode() os.FileMode {
 	mode := f.info.Mode()
 
 	if mode&os.ModeSymlink != 0 {
@@ -544,11 +541,11 @@ func (f *fileInfoWrapper) Mode() os.FileMode {
 	return mode
 }
 
-func (f *fileInfoWrapper) ModTime() time.Time {
+func (f *fileInfo) ModTime() time.Time {
 	return f.info.ModTime()
 }
 
-func (f *fileInfoWrapper) IsDir() bool {
+func (f *fileInfo) IsDir() bool {
 	if isRootPath(f.nfsPath, f.rootDir) {
 		return true
 	}
@@ -563,11 +560,11 @@ type fileStat struct {
 	GID uint32
 }
 
-func (f *fileInfoWrapper) Sys() any {
+func (f *fileInfo) Sys() any {
 	return &fileStat{UID: currentUID, GID: currentGID}
 }
 
-func (f *fileInfoWrapper) ATime() time.Time {
+func (f *fileInfo) ATime() time.Time {
 	sys := f.info.Sys()
 	if sys == nil {
 		return f.info.ModTime()
@@ -580,11 +577,11 @@ func (f *fileInfoWrapper) ATime() time.Time {
 	return f.info.ModTime()
 }
 
-func (f *fileInfoWrapper) CTime() time.Time {
+func (f *fileInfo) CTime() time.Time {
 	return f.info.ModTime()
 }
 
-func (f *fileInfoWrapper) NumLinks() int {
+func (f *fileInfo) NumLinks() int {
 	if f.info.IsDir() {
 		return 2
 	}
@@ -623,7 +620,7 @@ func hashString(s string) uint64 {
 }
 
 func getNFSPath(info nfsFs.FileInfo) string {
-	if w, ok := info.(*fileInfoWrapper); ok {
+	if w, ok := info.(*fileInfo); ok {
 		return w.nfsPath
 	}
 	return ""

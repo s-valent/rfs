@@ -61,7 +61,7 @@ func NewDaemon() *Daemon {
 const maxLogSize = 10 * 1024 * 1024 // 10MB
 
 func (d *Daemon) openLogFile(name string) (*truncatingFile, error) {
-	logPath := filepath.Join(StateDir(), "mounts", name+".log")
+	logPath := filepath.Join(StateDir(), "tmp", name+".log")
 
 	os.Remove(logPath)
 
@@ -72,7 +72,7 @@ func (d *Daemon) openLogFile(name string) (*truncatingFile, error) {
 	return &truncatingFile{File: f, maxSize: maxLogSize}, nil
 }
 func (d *Daemon) ensureDirs() error {
-	mountsDir := filepath.Join(StateDir(), "mounts")
+	mountsDir := filepath.Join(StateDir(), "tmp")
 	if err := os.MkdirAll(mountsDir, 0755); err != nil {
 		return err
 	}
@@ -80,7 +80,7 @@ func (d *Daemon) ensureDirs() error {
 }
 
 func (d *Daemon) cleanupOldLogs() {
-	mountsDir := filepath.Join(StateDir(), "mounts")
+	mountsDir := filepath.Join(StateDir(), "tmp")
 	today := time.Now().Format("2006-01-02")
 	entries, _ := os.ReadDir(mountsDir)
 	for _, e := range entries {
@@ -100,7 +100,7 @@ func (d *Daemon) cleanupOldLogs() {
 }
 
 func (d *Daemon) cleanupStaleState() {
-	mountsDir := filepath.Join(StateDir(), "mounts")
+	mountsDir := filepath.Join(StateDir(), "tmp")
 	entries, err := os.ReadDir(mountsDir)
 	if err != nil {
 		return
@@ -257,7 +257,7 @@ func (d *Daemon) startMount(alias, remotePath, name, customMountDir string, logF
 
 	mountDir := customMountDir
 	if mountDir == "" {
-		mountDir = filepath.Join(StateDir(), name)
+		mountDir = filepath.Join(StateDir(), "mnt", name)
 	}
 	if err := os.MkdirAll(mountDir, 0755); err != nil {
 		return nil, err
@@ -393,11 +393,11 @@ func (d *Daemon) handleStop(names []string) Response {
 
 func (d *Daemon) saveState(name string, info *MountInfo) {
 	data, _ := json.MarshalIndent(info, "", "  ")
-	os.WriteFile(filepath.Join(StateDir(), "mounts", name+".state"), data, 0644)
+	os.WriteFile(filepath.Join(StateDir(), "tmp", name+".state"), data, 0644)
 }
 
 func (d *Daemon) deleteState(name string) {
-	os.Remove(filepath.Join(StateDir(), "mounts", name+".state"))
+	os.Remove(filepath.Join(StateDir(), "tmp", name+".state"))
 }
 
 func (d *Daemon) cleanupDisconnected() {

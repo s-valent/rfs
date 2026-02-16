@@ -17,7 +17,7 @@ var binaryName string
 
 func init() {
 	home, _ := os.UserHomeDir()
-	stateDir = filepath.Join(home, ".local", "rfs")
+	stateDir = filepath.Join(home, ".rfs")
 	binaryName = filepath.Base(os.Args[0])
 	if binaryName == "." || binaryName == "" {
 		binaryName = "rfs"
@@ -162,7 +162,7 @@ func RunCLI() {
 			os.Exit(1)
 		}
 		name := ResolveMountName(args[0])
-		logFile := filepath.Join(stateDir, "mounts", name+".log")
+		logFile := filepath.Join(stateDir, "tmp", name+".log")
 		f, err := os.Open(logFile)
 		if err != nil {
 			fmt.Println("Error:", err)
